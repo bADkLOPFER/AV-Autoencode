@@ -397,11 +397,12 @@ function Get-NvencBaseArgs {
     param(
         [ValidateSet("hevc", "av1")]
         [string]$Codec,
-        [int]$Qvbr
+        [int]$Qvbr,
+        [string[]]$ExtraArgs = @()
     )
 
-    if ($Codec -eq "hevc") {
-        return @(
+    $args = if ($Codec -eq "hevc") {
+        @(
             "--avhw",
             "--codec", "hevc",
             "--profile", "main10",
@@ -420,25 +421,30 @@ function Get-NvencBaseArgs {
             "--bref-mode", "middle",
             "--pic-struct"
         )
+    } else {
+        @(
+            "--avhw",
+            "--codec", "av1",
+            "--profile", "main",
+            "--qvbr", $Qvbr,
+            "--output-depth", "10",
+            "--preset", "P7",
+            "--multipass", "2pass-full",
+            "--lookahead", "32",
+            "--lookahead-level", "3",
+            "--aq",
+            "--aq-temporal",
+            "--ref", "4",
+            "--bframes", "4",
+            "--bref-mode", "middle",
+            "--pic-struct"
+        )
     }
 
-    return @(
-        "--avhw",
-        "--codec", "av1",
-        "--profile", "main",
-        "--qvbr", $Qvbr,
-        "--output-depth", "10",
-        "--preset", "P7",
-        "--multipass", "2pass-full",
-        "--lookahead", "32",
-        "--lookahead-level", "3",
-        "--aq",
-        "--aq-temporal",
-        "--ref", "4",
-        "--bframes", "4",
-        "--bref-mode", "middle",
-        "--pic-struct"
-    )
+    if ($null -ne $ExtraArgs -and $ExtraArgs.Count -gt 0) {
+        $args += $ExtraArgs
+    }
+    return $args
 }
 
 function Get-AiModeArgs {
@@ -498,10 +504,7 @@ function Invoke-NvencSync {
         [switch]$PersistFullOutputOnTrim
     )
 
-    $Arguments = @($Arguments | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
-
-    # Native Pipeline mit zusammengefuehrten Streams vermeidet StdOut/StdErr Deadlocks.
-    # Bei globalem ErrorActionPreference=Stop darf nativer stderr nicht als terminierender Fehler abbrechen.
+    $Arguments = @($Arguments | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_)})
     $previousEap = $ErrorActionPreference
     $output = @()
     $exitCode = -1
@@ -713,7 +716,8 @@ function Encode-TestNvenc {
         [string]$OutputClip,
         [string]$Codec,
         [int]$Qvbr,
-        [int]$SampleDurationSeconds = 180
+        [int]$SampleDurationSeconds = 180,
+        [string[]]$ExtraArgs = @()
     )
 
     if (Test-Path -LiteralPath $OutputClip) {
@@ -721,7 +725,7 @@ function Encode-TestNvenc {
     }
 
     $baseArgs = @()
-    $baseArgs += Get-NvencBaseArgs -Codec $Codec -Qvbr $Qvbr
+    $baseArgs += Get-NvencBaseArgs -Codec $Codec -Qvbr $Qvbr -ExtraArgs $ExtraArgs
     $baseArgs += @(
         "-i", $InputClip,
         "-o", $OutputClip
@@ -847,7 +851,8 @@ function Find-QualityValueNvenc {
         [double]$TargetVmaf = 97.0,
         [double]$LowerBound = 96.5,
         [double]$UpperBound = 97.5,
-        [int]$SampleDurationSeconds = 180
+        [int]$SampleDurationSeconds = 180,
+        [string[]]$ExtraArgs = @()
     )
 
     $maxQvbr = if ($Codec -eq "av1") { 34 } else { 30 }
@@ -862,7 +867,7 @@ function Find-QualityValueNvenc {
         $vmafLog = Join-Path $WorkDir ("vmaf_qvbr_" + $qvbr + ".json")
 
         Write-Info "Teste QVBR=$qvbr (Step=$step)..."
-        $nvencResult = Encode-TestNvenc -Nvenc $Nvenc -InputClip $SampleClip -OutputClip $encoded -Codec $Codec -Qvbr $qvbr -SampleDurationSeconds $SampleDurationSeconds
+        $nvencResult = Encode-TestNvenc -Nvenc $Nvenc -InputClip $SampleClip -OutputClip $encoded -Codec $Codec -Qvbr $qvbr -SampleDurationSeconds $SampleDurationSeconds -ExtraArgs $ExtraArgs
 
         if ($nvencResult.SpeedFactor -gt 0) {
             $speedFactors += [double]$nvencResult.SpeedFactor
@@ -903,7 +908,6 @@ function Find-QualityValueNvenc {
         $qvbr = [Math]::Max(1, [Math]::Min($maxQvbr, $qvbr))
     }
 
-    # Falls nach 4-2-1 noch ueber dem Zielkorridor: in 2er-Schritten weiter erhoehen bis Treffer oder Safety-Cap.
     if ($null -ne $lastVmaf -and $lastVmaf -gt $UpperBound -and $qvbr -lt $maxQvbr) {
         Write-Warn "VMAF nach 4-2-1 weiterhin ueber Zielkorridor. Erhoehe QVBR dynamisch in 2er-Schritten bis max $maxQvbr."
 
@@ -914,7 +918,7 @@ function Find-QualityValueNvenc {
             $vmafLog = Join-Path $WorkDir ("vmaf_qvbr_" + $qvbr + ".json")
 
             Write-Info "Dynamischer Nachlauf: Teste QVBR=$qvbr (Step=2)..."
-            $nvencResult = Encode-TestNvenc -Nvenc $Nvenc -InputClip $SampleClip -OutputClip $encoded -Codec $Codec -Qvbr $qvbr -SampleDurationSeconds $SampleDurationSeconds
+            $nvencResult = Encode-TestNvenc -Nvenc $Nvenc -InputClip $SampleClip -OutputClip $encoded -Codec $Codec -Qvbr $qvbr -SampleDurationSeconds $SampleDurationSeconds -ExtraArgs $ExtraArgs
 
             if ($nvencResult.SpeedFactor -gt 0) {
                 $speedFactors += [double]$nvencResult.SpeedFactor
@@ -1078,11 +1082,12 @@ function Encode-FinalNvenc {
         [string]$OutputFile,
         [string]$Codec,
         [int]$Qvbr,
-        [string]$AiChoice
+        [string]$AiChoice,
+        [string[]]$ExtraArgs = @()
     )
 
     $args = @()
-    $args += Get-NvencBaseArgs -Codec $Codec -Qvbr $Qvbr
+    $args += Get-NvencBaseArgs -Codec $Codec -Qvbr $Qvbr -ExtraArgs $ExtraArgs
     $args += Get-AiModeArgs -AiChoice $AiChoice
     $args += @(
         "--vpp-subburn", "track=1,forced_subs_only=on",
@@ -1405,8 +1410,16 @@ try {
         $targetVmaf = 97.0
         $lowerBound = 96.5
         $upperBound = 97.5
+        $nvencExtraArgs = @()
 
-        if ($noiseProbe.NoiseDetected) {
+        if ($noiseProbe.Delta -ge 0.50) {
+            $targetVmaf = 94.5
+            $lowerBound = 94.0
+            $upperBound = 95.0
+            $nvencExtraArgs = @("--vpp-pmd", "apply_count=2,strength=35,threshold=45")
+            Write-Info "Delta-Bitraten-Analyse: Delta = $deltaPercent% -> Extremes Rauschen (>=50%) erkannt. VMAF-Zielwert auf 94.5 gesenkt & PMD-Denoise aktiviert."
+        }
+        elseif ($noiseProbe.NoiseDetected) {
             $targetVmaf = 95.5
             $lowerBound = 95.0
             $upperBound = 96.0
@@ -1418,7 +1431,7 @@ try {
 
         Write-Info "Starte 4-2-1 QVBR Einmessung (ohne KI-Filter)..."
         $sampleDurationSeconds = 180
-        $fit = Find-QualityValueNvenc -Nvenc $tools.NVEncC -FFmpeg $tools.FFmpeg -SampleClip $sampleClip -Codec $codec -WorkDir $workDir -TargetVmaf $targetVmaf -LowerBound $lowerBound -UpperBound $upperBound -SampleDurationSeconds $sampleDurationSeconds
+        $fit = Find-QualityValueNvenc -Nvenc $tools.NVEncC -FFmpeg $tools.FFmpeg -SampleClip $sampleClip -Codec $codec -WorkDir $workDir -TargetVmaf $targetVmaf -LowerBound $lowerBound -UpperBound $upperBound -SampleDurationSeconds $sampleDurationSeconds -ExtraArgs $nvencExtraArgs
         $qvbr = [int]$fit.Qvbr
 
         Write-Host ""
@@ -1432,7 +1445,7 @@ try {
         $outputFile = Join-Path $tools.Results $outputName
 
         $finalArgsPreview = @()
-        $finalArgsPreview += Get-NvencBaseArgs -Codec $codec -Qvbr $qvbr
+        $finalArgsPreview += Get-NvencBaseArgs -Codec $codec -Qvbr $qvbr -ExtraArgs $nvencExtraArgs
         $finalArgsPreview += Get-AiModeArgs -AiChoice $aiChoice
         $finalArgsPreview += @("--vpp-subburn", "track=1,forced_subs_only=on", "--chapter-copy", "--audio-copy")
 
@@ -1449,7 +1462,7 @@ try {
         }
 
         Write-Info "Finaler Encode startet (Work-Directory): $outputFileWork"
-        Encode-FinalNvenc -Nvenc $tools.NVEncC -InputFile $inputFile -OutputFile $outputFileWork -Codec $codec -Qvbr $qvbr -AiChoice $aiChoice
+        Encode-FinalNvenc -Nvenc $tools.NVEncC -InputFile $inputFile -OutputFile $outputFileWork -Codec $codec -Qvbr $qvbr -AiChoice $aiChoice -ExtraArgs $nvencExtraArgs
 
         if (Test-Path -LiteralPath $outputFile) {
             Remove-Item -LiteralPath $outputFile -Force
