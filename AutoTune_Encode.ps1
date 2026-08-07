@@ -464,12 +464,12 @@ function Get-AiModeArgs {
         }
         "3" {
             return @(
-                "--vpp-ngx-vrs", "quality=ultra-high,height=1080"
+                "--vpp-resize", "algo=ngx-vsr,vsr-quality=4"
             )
         }
         "4" {
             return @(
-                "--vpp-ngx-vrs", "quality=ultra-high,height=1080",
+                "--vpp-resize", "algo=ngx-vsr,vsr-quality=4",
                 "--colormatrix", "bt2020nc",
                 "--colorprim", "bt2020",
                 "--transfer", "smpte2084",
