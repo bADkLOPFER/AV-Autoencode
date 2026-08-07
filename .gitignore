@@ -1,0 +1,33 @@
+# ==========================================
+# Binaries & Tool-Ordner (nicht ins Git)
+# ==========================================
+FFMpeg/
+NVEncC/
+*.exe
+
+# ==========================================
+# Zielordner & Videodateien
+# ==========================================
+Results/
+*.mkv
+*.mp4
+*.ts
+*.m2ts
+*.avi
+
+# ==========================================
+# Temporäre Dateien & VMAF-Logs
+# ==========================================
+*_sample_peak.mkv
+*_test_out.mkv
+*.log
+*.csv
+
+# ==========================================
+# Betriebssystem & IDE-Müll
+# ==========================================
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
