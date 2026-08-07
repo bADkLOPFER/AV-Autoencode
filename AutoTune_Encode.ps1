@@ -850,8 +850,8 @@ function Find-QualityValueNvenc {
         [int]$SampleDurationSeconds = 180
     )
 
-    $maxQvbr = if ($Codec -eq "av1") { 35 } else { 30 }
-    $qvbr = if ($Codec -eq "av1") { 27 } else { 22 }
+    $maxQvbr = if ($Codec -eq "av1") { 34 } else { 30 }
+    $qvbr = if ($Codec -eq "av1") { 26 } else { 22 }
     $steps = @(4, 2, 1)
     $attempts = @()
     $speedFactors = @()
