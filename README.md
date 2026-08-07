@@ -9,7 +9,7 @@ Das Skript analysiert das Eingabevideo vorab auf Bitraten-Spitzen sowie Rauschmu
 ✨ Features & Highlights
 
     🎯 Automatisierte QVBR / CRF Ermittlung (4-2-1 Einmessung): Findet auf Basis von VMAF-Analysen (Zielbereich ~96.5–97.5) automatisch den perfekten Qualitätswert für HEVC & AV1.
-    🔄 Dynamischer Nachlauf & Safety-Cap: Bricht bei hohen VMAF-Werten nicht vorzeitig ab, sondern stuft dynamisch in 2er-Schritten weiter ab, inklusive harter Obergrenzen (QVBR Max: 30 bei HEVC, 35 bei AV1), um Artefakte im Gesamtlauf zu verhindern.
+    🔄 Dynamischer Nachlauf & Safety-Cap: Bricht bei hohen VMAF-Werten nicht vorzeitig ab, sondern stuft dynamisch in 2er-Schritten weiter ab, inklusive harter Obergrenzen (QVBR Max: 30 bei HEVC, 34 bei AV1), um Artefakte im Gesamtlauf zu verhindern.
     🔍 Pre-Flight Rausch-Check (Noise Analysis): Analysiert ein Rausch-Sample des Videos mit dem --vpp-knn Filter. Erkennt starkes Rauschen (Delta $\ge 25\%$) und senkt den VMAF-Zielwert automatisch auf 95.5 ab.
     🤖 NVIDIA Tensor-KI Video Optimization (NVEncC): Bietet Modi für SDR-zu-HDR10-Konvertierung (--vpp-ngx-truehdr) und DVD2HD AI Upscaling (--vpp-ngx-vrs).
     ⚡ Automatischer Engine-Fallback: Erkennt kompatible NVIDIA-GPUs über nvidia-smi und schaltet bei Bedarf nahtlos auf den CPU-Fallback mit FFmpeg (libsvtav1 / libx265) um.
