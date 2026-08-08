@@ -475,6 +475,61 @@ function Cut-TestSample {
     }
 }
 
+function Cut-NoiseSampleAtTime {
+    param(
+        [string]$FFmpeg,
+        [string]$InputFile,
+        [int]$StartSeconds,
+        [int]$DurationSeconds,
+        [string]$OutputPath
+    )
+
+    if ($StartSeconds -lt 0) {
+        $StartSeconds = 0
+    }
+
+    Write-Info "Schneide Rausch-Clip ($DurationSeconds s) ab Sekunde $StartSeconds..."
+
+    $copyArgs = @(
+        "-hide_banner", "-loglevel", "error", "-y",
+        "-ss", $StartSeconds,
+        "-i", $InputFile,
+        "-t", "$DurationSeconds",
+        "-map", "0:v:0",
+        "-an",
+        "-sn",
+        "-c", "copy",
+        $OutputPath
+    )
+
+    & $FFmpeg @copyArgs
+    if ($LASTEXITCODE -eq 0) {
+        return $StartSeconds
+    }
+
+    Write-Warn "Copy-Cut fuer Rausch-Clip fehlgeschlagen, nutze re-encode fallback."
+    $fallbackArgs = @(
+        "-hide_banner", "-loglevel", "error", "-y",
+        "-ss", $StartSeconds,
+        "-i", $InputFile,
+        "-t", "$DurationSeconds",
+        "-map", "0:v:0",
+        "-an",
+        "-sn",
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "0",
+        $OutputPath
+    )
+
+    & $FFmpeg @fallbackArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "Konnte Rausch-Clip nicht erstellen."
+    }
+
+    return $StartSeconds
+}
+
 function Cut-NoiseSample {
     param(
         [string]$FFmpeg,
@@ -489,46 +544,92 @@ function Cut-NoiseSample {
         $noiseStart = 0
     }
 
-    Write-Info "Schneide Rausch-Sample (20 s) ab Sekunde $noiseStart..."
+    return Cut-NoiseSampleAtTime -FFmpeg $FFmpeg -InputFile $InputFile -StartSeconds $noiseStart -DurationSeconds 20 -OutputPath $OutputPath
+}
 
-    $copyArgs = @(
-        "-hide_banner", "-loglevel", "error", "-y",
-        "-ss", $noiseStart,
-        "-i", $InputFile,
-        "-t", "20",
-        "-map", "0:v:0",
-        "-an",
-        "-sn",
-        "-c", "copy",
-        $OutputPath
+function Get-MultiPointNoiseAnalysis {
+    param(
+        [string]$Nvenc,
+        [string]$FFmpeg,
+        [string]$InputFile,
+        [string]$WorkDir,
+        [int]$PeakStartSeconds,
+        [int]$PeakWindowSeconds,
+        [int]$TotalDurationSeconds
     )
 
-    & $FFmpeg @copyArgs
-    if ($LASTEXITCODE -eq 0) {
-        return $noiseStart
+    $sampleDurationSeconds = 5
+    $point1Time = [int][Math]::Floor($PeakStartSeconds + ($PeakWindowSeconds / 2.0))
+    $point2Time = [int][Math]::Floor($TotalDurationSeconds / 3.0)
+    $point3Time = [int][Math]::Floor(($TotalDurationSeconds * 2.0) / 3.0)
+
+    if ($point1Time -lt 0) {
+        $point1Time = 0
+    }
+    if ($point2Time -lt 0) {
+        $point2Time = 0
+    }
+    if ($point3Time -lt 0) {
+        $point3Time = 0
     }
 
-    Write-Warn "Copy-Cut fuer Rausch-Sample fehlgeschlagen, nutze re-encode fallback."
-    $fallbackArgs = @(
-        "-hide_banner", "-loglevel", "error", "-y",
-        "-ss", $noiseStart,
-        "-i", $InputFile,
-        "-t", "20",
-        "-map", "0:v:0",
-        "-an",
-        "-sn",
-        "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-crf", "0",
-        $OutputPath
+    if ($TotalDurationSeconds -gt 0) {
+        $point1Time = [int][Math]::Min([Math]::Max($point1Time, 0), [Math]::Max(0, $TotalDurationSeconds - 1))
+        $point2Time = [int][Math]::Min([Math]::Max($point2Time, 0), [Math]::Max(0, $TotalDurationSeconds - 1))
+        $point3Time = [int][Math]::Min([Math]::Max($point3Time, 0), [Math]::Max(0, $TotalDurationSeconds - 1))
+    }
+
+    $points = @(
+        [pscustomobject]@{ Label = "Peak"; TimeSeconds = $point1Time; Weight = 0.50; ClipPath = (Join-Path $WorkDir "noise_point_peak.mkv") },
+        [pscustomobject]@{ Label = "33%"; TimeSeconds = $point2Time; Weight = 0.25; ClipPath = (Join-Path $WorkDir "noise_point_33percent.mkv") },
+        [pscustomobject]@{ Label = "66%"; TimeSeconds = $point3Time; Weight = 0.25; ClipPath = (Join-Path $WorkDir "noise_point_66percent.mkv") }
     )
 
-    & $FFmpeg @fallbackArgs
-    if ($LASTEXITCODE -ne 0) {
-        throw "Konnte Rausch-Sample nicht erstellen."
+    $pointResults = @()
+    foreach ($point in $points) {
+        if (Test-Path -LiteralPath $point.ClipPath) {
+            Remove-Item -LiteralPath $point.ClipPath -Force -ErrorAction SilentlyContinue
+        }
+
+        Cut-NoiseSampleAtTime -FFmpeg $FFmpeg -InputFile $InputFile -StartSeconds $point.TimeSeconds -DurationSeconds $sampleDurationSeconds -OutputPath $point.ClipPath | Out-Null
+
+        $probe = Test-NoiseLevel -Nvenc $Nvenc -NoiseSample $point.ClipPath -WorkDir $WorkDir
+        $pointResults += [pscustomobject]@{
+            Label = $point.Label
+            TimeSeconds = $point.TimeSeconds
+            Weight = $point.Weight
+            ClipPath = $point.ClipPath
+            Delta = $probe.Delta
+            DeltaPercent = [Math]::Round($probe.Delta * 100.0, 1)
+            NoiseDetected = $probe.NoiseDetected
+            RawSize = $probe.RawSize
+            DenoisedSize = $probe.DenoisedSize
+        }
     }
 
-    return $noiseStart
+    $totalWeight = [double](($pointResults | Measure-Object -Property Weight -Sum).Sum)
+    $weightedDelta = 0.0
+    if ($totalWeight -gt 0) {
+        $weightedDelta = [double](($pointResults | ForEach-Object { $_.Delta * $_.Weight } | Measure-Object -Sum).Sum / $totalWeight)
+    }
+
+    $analysisSummary = @(
+        "Multi-point noise analysis (3 clips):",
+        "  Peak: $($pointResults[0].DeltaPercent)% (weight $([Math]::Round($pointResults[0].Weight * 100.0, 0))%)",
+        "  33%: $($pointResults[1].DeltaPercent)% (weight $([Math]::Round($pointResults[1].Weight * 100.0, 0))%)",
+        "  66%: $($pointResults[2].DeltaPercent)% (weight $([Math]::Round($pointResults[2].Weight * 100.0, 0))%)",
+        "  Weighted Delta: $([Math]::Round($weightedDelta * 100.0, 1))%"
+    ) -join [Environment]::NewLine
+
+    return [pscustomobject]@{
+        NoiseDetected = ($weightedDelta -ge 0.25)
+        Delta = $weightedDelta
+        DeltaPercent = [Math]::Round($weightedDelta * 100.0, 1)
+        RawSize = [int64](($pointResults | Measure-Object -Property RawSize -Sum).Sum)
+        DenoisedSize = [int64](($pointResults | Measure-Object -Property DenoisedSize -Sum).Sum)
+        Points = $pointResults
+        AnalysisSummary = $analysisSummary
+    }
 }
 
 function Get-NvencBaseArgs {
@@ -1360,7 +1461,8 @@ function Write-RunSummaryLog {
         [long]$NoiseDenoisedBytes = -1,
         [double]$TargetVmaf = [double]::NaN,
         [double]$LowerBound = [double]::NaN,
-        [double]$UpperBound = [double]::NaN
+        [double]$UpperBound = [double]::NaN,
+        [string]$NoiseAnalysisSummary = ""
     )
 
     $lines = @()
@@ -1392,6 +1494,14 @@ function Write-RunSummaryLog {
         $lines += "Pre-Flight Noise Analysis:"
         $lines += "  Delta Percent: $NoiseDeltaPercent%"
         $lines += "  Noise Detected: $noiseState"
+        if (-not [string]::IsNullOrWhiteSpace($NoiseAnalysisSummary)) {
+            $lines += "  Analysis Details:"
+            foreach ($detailLine in ($NoiseAnalysisSummary -split [Environment]::NewLine)) {
+                if (-not [string]::IsNullOrWhiteSpace($detailLine)) {
+                    $lines += "    $detailLine"
+                }
+            }
+        }
         if ($NoiseRawBytes -ge 0) {
             $lines += "  noise_raw.mkv bytes: $NoiseRawBytes"
         }
@@ -1612,11 +1722,13 @@ try {
     Cut-TestSample -FFmpeg $tools.FFmpeg -InputFile $inputFile -StartSeconds $peak.StartSeconds -DurationSeconds $peak.WindowSeconds -OutputPath $sampleClip
 
     if ($hasNvidia) {
-        $noiseSample = Join-Path $workDir "noise_sample.mkv"
-        Cut-NoiseSample -FFmpeg $tools.FFmpeg -InputFile $inputFile -PeakStartSeconds $peak.StartSeconds -PeakWindowSeconds $peak.WindowSeconds -OutputPath $noiseSample | Out-Null
-
-        $noiseProbe = Test-NoiseLevel -Nvenc $tools.NVEncC -NoiseSample $noiseSample -WorkDir $workDir
+        $noiseProbe = Get-MultiPointNoiseAnalysis -Nvenc $tools.NVEncC -FFmpeg $tools.FFmpeg -InputFile $inputFile -WorkDir $workDir -PeakStartSeconds $peak.StartSeconds -PeakWindowSeconds $peak.WindowSeconds -TotalDurationSeconds $totalDurationSeconds
         $deltaPercent = [Math]::Round($noiseProbe.Delta * 100.0, 1)
+
+        Write-Info "Multi-Point Pre-Flight Rauschanalyse abgeschlossen. Gewichteter Delta-Wert: $deltaPercent%"
+        foreach ($point in $noiseProbe.Points) {
+            Write-Info ("  {0}: Delta={1}% (Gewicht {2}%)" -f $point.Label, $point.DeltaPercent, [Math]::Round($point.Weight * 100.0, 0))
+        }
 
         $targetVmaf = 97.0
         $lowerBound = 96.5
@@ -1709,7 +1821,7 @@ try {
         }
         Move-Item -LiteralPath $outputFileWork -Destination $outputFile -Force
 
-        Write-RunSummaryLog -SummaryPath $summaryPath -InputFile $inputFile -CodecTag $codecTag -Engine "NVEncC" -ModeName $modeName -Peak $peak -Iterations $fit.Attempts -IterationLabel "QVBR" -FinalValueLabel "QVBR" -FinalValue $qvbr -OutputFile $outputFile -FinalParams ($finalArgsPreview -join ' ') -NoiseDeltaPercent $deltaPercent -NoiseDetected $noiseProbe.NoiseDetected -NoiseRawBytes $noiseProbe.RawSize -NoiseDenoisedBytes $noiseProbe.DenoisedSize -TargetVmaf $targetVmaf -LowerBound $lowerBound -UpperBound $upperBound
+        Write-RunSummaryLog -SummaryPath $summaryPath -InputFile $inputFile -CodecTag $codecTag -Engine "NVEncC" -ModeName $modeName -Peak $peak -Iterations $fit.Attempts -IterationLabel "QVBR" -FinalValueLabel "QVBR" -FinalValue $qvbr -OutputFile $outputFile -FinalParams ($finalArgsPreview -join ' ') -NoiseDeltaPercent $deltaPercent -NoiseDetected $noiseProbe.NoiseDetected -NoiseRawBytes $noiseProbe.RawSize -NoiseDenoisedBytes $noiseProbe.DenoisedSize -TargetVmaf $targetVmaf -LowerBound $lowerBound -UpperBound $upperBound -NoiseAnalysisSummary $noiseProbe.AnalysisSummary
 
         $measuredVmaf = Get-MeasuredVmafForSelection -Attempts $fit.Attempts -ValueProperty "Qvbr" -SelectedValue $qvbr
         $runtimeSeconds = [double]((Get-Date) - $runStart).TotalSeconds
