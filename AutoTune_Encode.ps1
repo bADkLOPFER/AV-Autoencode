@@ -1103,17 +1103,15 @@ function Find-QualityValueNvenc {
         }
 
         if ($qvbr -ge $maxQvbr) {
-            Write-Warn "Safety-Cap erreicht (QVBR=$maxQvbr). Verwende Max-Wert als Sicherheitsgrenze."
-            $avgSpeed = if ($speedFactors.Count -gt 0) { [double](($speedFactors | Measure-Object -Average).Average) } else { 0.0 }
-            return [pscustomobject]@{
-                Qvbr = $maxQvbr
-                Attempts = $attempts
-                SpeedFactor = $avgSpeed
-            }
+            Write-Warn "Safety-Cap erreicht (QVBR=$maxQvbr). Ermittele den besten Wert aus allen bisherigen Tests."
         }
     }
 
-    $closest = $attempts | Sort-Object { [Math]::Abs($_.Vmaf - $TargetVmaf) } | Select-Object -First 1
+    $closest = $attempts |
+        Sort-Object `
+            @{ Expression = { [Math]::Abs($_.Vmaf - $TargetVmaf) }; Ascending = $true }, `
+            @{ Expression = { $_.Vmaf }; Ascending = $false } |
+        Select-Object -First 1
     Write-Warn "Kein exakter Treffer im Zielfenster. Nutze naechsten Wert (QVBR=$($closest.Qvbr), VMAF=$($closest.Vmaf))."
 
     return [pscustomobject]@{
