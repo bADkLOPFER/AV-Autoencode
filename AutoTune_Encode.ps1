@@ -179,6 +179,109 @@ function Get-VideoDurationSeconds {
     return [int][Math]::Round($duration)
 }
 
+function Test-InterlacedSource {
+    param(
+        [string]$FFprobe,
+        [string]$InputFile
+    )
+
+    # First pass: use stream metadata when field order is present.
+    $metaArgs = @(
+        "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=field_order",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        $InputFile
+    )
+
+    $metaOutput = & $FFprobe @metaArgs 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        $fieldOrder = ($metaOutput | Out-String).Trim().ToLowerInvariant()
+        if ($fieldOrder -in @("tt", "bb", "tb", "bt")) {
+            return [pscustomobject]@{
+                IsInterlaced = $true
+                Method = "field_order"
+                FieldOrder = $fieldOrder
+                Ratio = [double]::NaN
+                Threshold = [double]::NaN
+                TotalFrames = 0
+            }
+        }
+        if ($fieldOrder -eq "progressive") {
+            return [pscustomobject]@{
+                IsInterlaced = $false
+                Method = "field_order"
+                FieldOrder = $fieldOrder
+                Ratio = [double]::NaN
+                Threshold = [double]::NaN
+                TotalFrames = 0
+            }
+        }
+    }
+
+    # Fallback: sample first 90 seconds and inspect frame interlace flags.
+    $frameArgs = @(
+        "-v", "error",
+        "-select_streams", "v:0",
+        "-read_intervals", "0%+90",
+        "-show_entries", "frame=interlaced_frame",
+        "-of", "csv=p=0",
+        $InputFile
+    )
+
+    $frameOutput = & $FFprobe @frameArgs 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Konnte Interlaced-Erkennung mit ffprobe nicht durchfuehren."
+    }
+
+    $totalFrames = 0
+    $interlacedFrames = 0
+
+    foreach ($line in $frameOutput) {
+        $text = ([string]$line).Trim()
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+
+        $valueText = ($text.Split(',') | Select-Object -Last 1).Trim()
+        $flag = 0
+        if (-not [int]::TryParse($valueText, [ref]$flag)) { continue }
+
+        $totalFrames++
+        if ($flag -eq 1) {
+            $interlacedFrames++
+        }
+    }
+
+    if ($totalFrames -eq 0) {
+        return [pscustomobject]@{
+            IsInterlaced = $false
+            Method = "frame_ratio"
+            FieldOrder = "unknown"
+            Ratio = 0.0
+            Threshold = 0.30
+            TotalFrames = 0
+        }
+    }
+
+    $ratio = [double]$interlacedFrames / [double]$totalFrames
+    # Adaptive and stricter thresholding to reduce false positives on short/noisy samples.
+    $threshold = 0.30
+    if ($totalFrames -lt 800) {
+        $threshold = 0.40
+    }
+    elseif ($totalFrames -lt 2000) {
+        $threshold = 0.35
+    }
+
+    return [pscustomobject]@{
+        IsInterlaced = ($ratio -ge $threshold)
+        Method = "frame_ratio"
+        FieldOrder = "unknown"
+        Ratio = $ratio
+        Threshold = $threshold
+        TotalFrames = $totalFrames
+    }
+}
+
 function Get-PeakWindow {
     param(
         [string]$FFprobe,
@@ -448,7 +551,10 @@ function Get-NvencBaseArgs {
 }
 
 function Get-AiModeArgs {
-    param([ValidateSet("1", "2", "3", "4")][string]$AiChoice)
+    param(
+        [ValidateSet("1", "2", "3", "4")][string]$AiChoice,
+        [bool]$UseNnedi = $false
+    )
 
     switch ($AiChoice) {
         "2" {
@@ -463,12 +569,18 @@ function Get-AiModeArgs {
             )
         }
         "3" {
-            return @(
+            $args = @(
+                "--output-res", "1920x1080,preserve_aspect_ratio=increase",
                 "--vpp-resize", "algo=ngx-vsr,vsr-quality=4"
             )
+            if ($UseNnedi) {
+                $args += @("--vpp-nnedi", "quality=slow")
+            }
+            return $args
         }
         "4" {
-            return @(
+            $args = @(
+                "--output-res", "1920x1080,preserve_aspect_ratio=increase",
                 "--vpp-resize", "algo=ngx-vsr,vsr-quality=4",
                 "--colormatrix", "bt2020nc",
                 "--colorprim", "bt2020",
@@ -478,6 +590,10 @@ function Get-AiModeArgs {
                 "--atc-sei", "auto",
                 "--vpp-ngx-truehdr", "contrast=80,saturation=90,middlegray=50,maxluminance=1000"
             )
+            if ($UseNnedi) {
+                $args += @("--vpp-nnedi", "quality=slow")
+            }
+            return $args
         }
         default {
             return @()
@@ -1083,12 +1199,13 @@ function Encode-FinalNvenc {
         [string]$Codec,
         [int]$Qvbr,
         [string]$AiChoice,
+        [bool]$UseNnedi = $false,
         [string[]]$ExtraArgs = @()
     )
 
     $args = @()
     $args += Get-NvencBaseArgs -Codec $Codec -Qvbr $Qvbr -ExtraArgs $ExtraArgs
-    $args += Get-AiModeArgs -AiChoice $AiChoice
+    $args += Get-AiModeArgs -AiChoice $AiChoice -UseNnedi $UseNnedi
     $args += @(
         "--vpp-subburn", "track=1,forced_subs_only=on",
         "--chapter-copy",
@@ -1366,6 +1483,36 @@ try {
         throw "Track 1 (Index 0) fuer Untertitel wurde nicht gefunden. Forced-Subburn setzt mindestens eine Untertitelspur voraus."
     }
 
+    $isInterlacedSource = $false
+    try {
+        $interlacedProbe = Test-InterlacedSource -FFprobe $tools.FFprobe -InputFile $inputFile
+        $isInterlacedSource = [bool]$interlacedProbe.IsInterlaced
+
+        if ($isInterlacedSource) {
+            if ($interlacedProbe.Method -eq "frame_ratio") {
+                $ratioPct = [Math]::Round(([double]$interlacedProbe.Ratio) * 100.0, 1)
+                $thresholdPct = [Math]::Round(([double]$interlacedProbe.Threshold) * 100.0, 1)
+                Write-Info "Interlaced-Quelle erkannt: Frame-Ratio $ratioPct% bei Schwelle $thresholdPct% (Frames: $($interlacedProbe.TotalFrames))."
+            }
+            else {
+                Write-Info "Interlaced-Quelle erkannt ueber field_order=$($interlacedProbe.FieldOrder) (z.B. PAL-DVD)."
+            }
+        }
+        else {
+            if ($interlacedProbe.Method -eq "frame_ratio") {
+                $ratioPct = [Math]::Round(([double]$interlacedProbe.Ratio) * 100.0, 1)
+                $thresholdPct = [Math]::Round(([double]$interlacedProbe.Threshold) * 100.0, 1)
+                Write-Info "Keine Interlaced-Quelle erkannt: Frame-Ratio $ratioPct% unter Schwelle $thresholdPct% (Frames: $($interlacedProbe.TotalFrames))."
+            }
+            else {
+                Write-Info "Keine Interlaced-Quelle erkannt ueber field_order=$($interlacedProbe.FieldOrder)."
+            }
+        }
+    }
+    catch {
+        Write-Warn "Interlaced-Erkennung fehlgeschlagen. Fahre ohne automatische Nnedi-Zuschaltung fort. Grund: $($_.Exception.Message)"
+    }
+
     $hasNvidia = Test-NvidiaGpu -NvencPath $tools.NVEncC
     if ($hasNvidia) {
         Write-Info "NVIDIA GPU erkannt: NVEncC wird verwendet."
@@ -1411,6 +1558,11 @@ try {
         $lowerBound = 96.5
         $upperBound = 97.5
         $nvencExtraArgs = @()
+        $useNnedi = $isInterlacedSource -and ($aiChoice -in @("3", "4"))
+
+        if ($useNnedi) {
+            Write-Info "Interlaced + DVD-Upscaling erkannt: Ergaenze --vpp-nnedi quality=slow in den finalen NVEnc-Parametern."
+        }
 
         if ($noiseProbe.Delta -ge 0.50) {
             $targetVmaf = 94.5
@@ -1419,13 +1571,25 @@ try {
             $nvencExtraArgs = @("--vpp-pmd", "apply_count=2,strength=35,threshold=45")
             Write-Info "Delta-Bitraten-Analyse: Delta = $deltaPercent% -> Extremes Rauschen (>=50%) erkannt. VMAF-Zielwert auf 94.5 gesenkt & PMD-Denoise aktiviert."
         }
+        elseif ($noiseProbe.Delta -ge 0.30) {
+            $targetVmaf = 96.0
+            $lowerBound = 95.5
+            $upperBound = 96.5
+            $nvencExtraArgs = @("--vpp-pmd", "apply_count=1,strength=20,threshold=35")
+            Write-Info "Delta-Bitraten-Analyse: Delta = $deltaPercent% -> Moderates Rauschen (30-50%) erkannt. VMAF-Zielwert auf 96.0 gesetzt & PMD-Denoise (mild) aktiviert."
+        }
         elseif ($noiseProbe.NoiseDetected) {
             $targetVmaf = 95.5
             $lowerBound = 95.0
             $upperBound = 96.0
-            Write-Info "Delta-Bitraten-Analyse: Delta = $deltaPercent% -> Starkes Rauschen erkannt. VMAF-Zielwert auf 95.5 gesenkt."
+            $nvencExtraArgs = @()
+            Write-Info "Delta-Bitraten-Analyse: Delta = $deltaPercent% -> Leichtes Rauschen (>=25%) erkannt. VMAF-Zielwert auf 95.5 gesetzt, ohne zusaetzliches PMD-Denoise."
         }
         else {
+            $targetVmaf = 97.0
+            $lowerBound = 96.5
+            $upperBound = 97.5
+            $nvencExtraArgs = @()
             Write-Info "Delta-Bitraten-Analyse: Delta = $deltaPercent% -> Kein starkes Rauschen erkannt. VMAF-Zielbereich bleibt 96.5-97.5."
         }
 
@@ -1446,10 +1610,19 @@ try {
 
         $finalArgsPreview = @()
         $finalArgsPreview += Get-NvencBaseArgs -Codec $codec -Qvbr $qvbr -ExtraArgs $nvencExtraArgs
-        $finalArgsPreview += Get-AiModeArgs -AiChoice $aiChoice
+        $finalArgsPreview += Get-AiModeArgs -AiChoice $aiChoice -UseNnedi $useNnedi
         $finalArgsPreview += @("--vpp-subburn", "track=1,forced_subs_only=on", "--chapter-copy", "--audio-copy")
 
         $speedFactor = [double]$fit.SpeedFactor
+        if ($speedFactor -gt 0) {
+            if ($aiChoice -in @("3", "4")) {
+                $speedFactor *= 0.35
+            }
+            elseif ($aiChoice -eq "2") {
+                $speedFactor *= 0.90
+            }
+        }
+
         if ($speedFactor -gt 0 -and $totalDurationSeconds -gt 0) {
             $estimatedFinalSeconds = [double]$totalDurationSeconds / $speedFactor
             $etaTime = (Get-Date).AddSeconds($estimatedFinalSeconds)
@@ -1462,7 +1635,7 @@ try {
         }
 
         Write-Info "Finaler Encode startet (Work-Directory): $outputFileWork"
-        Encode-FinalNvenc -Nvenc $tools.NVEncC -InputFile $inputFile -OutputFile $outputFileWork -Codec $codec -Qvbr $qvbr -AiChoice $aiChoice -ExtraArgs $nvencExtraArgs
+        Encode-FinalNvenc -Nvenc $tools.NVEncC -InputFile $inputFile -OutputFile $outputFileWork -Codec $codec -Qvbr $qvbr -AiChoice $aiChoice -UseNnedi $useNnedi -ExtraArgs $nvencExtraArgs
 
         if (Test-Path -LiteralPath $outputFile) {
             Remove-Item -LiteralPath $outputFile -Force
