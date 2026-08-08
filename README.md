@@ -56,4 +56,4 @@ Das Skript analysiert das Eingabevideo vorab auf Bitraten-Spitzen sowie Rauschmu
 
     Audiokopie & Kapitel:
         - Audio-Spuren und Kapitel werden 1:1 übernommen (--audio-copy, --chapter-copy).
-        - Forced Subtitles: Das Skript setzt voraus, dass mindestens eine Untertitelspur vorhanden ist, und brennt erzwungene Untertitel automatisch in das Video ein (--vpp-subburn track=1,forced_subs_only=on).
+        - Forced Subtitles: Das Skript setzt voraus, dass mindestens eine Untertitelspur mit Forced-Flag vorhanden ist, und brennt erzwungene Untertitel automatisch in das Video ein (--vpp-subburn track=1,forced_subs_only=on).

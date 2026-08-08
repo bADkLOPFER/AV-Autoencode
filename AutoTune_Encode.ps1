@@ -130,7 +130,7 @@ function Test-NvidiaGpu {
     }
 }
 
-function Get-SubtitleTrackIndexZeroExists {
+function Get-SubtitleTrackStatus {
     param(
         [string]$FFprobe,
         [string]$InputFile
@@ -139,13 +139,48 @@ function Get-SubtitleTrackIndexZeroExists {
     $args = @(
         "-v", "error",
         "-select_streams", "s:0",
-        "-show_entries", "stream=index",
-        "-of", "default=noprint_wrappers=1:nokey=1",
+        "-show_entries", "stream=index,disposition",
+        "-of", "json",
         $InputFile
     )
 
     $output = & $FFprobe @args 2>&1
-    return $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace(($output | Out-String).Trim())
+    if ($LASTEXITCODE -ne 0) {
+        throw "Konnte Untertitelspur mit ffprobe nicht analysieren."
+    }
+
+    $raw = ($output | Out-String).Trim()
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        return [pscustomobject]@{
+            HasSubtitle = $false
+            HasForcedSubtitle = $false
+        }
+    }
+
+    $probe = $raw | ConvertFrom-Json
+    $streams = @()
+    if ($null -ne $probe.streams) {
+        $streams = @($probe.streams)
+    }
+
+    $hasSubtitle = $streams.Count -gt 0
+    $hasForcedSubtitle = $false
+
+    if ($hasSubtitle) {
+        foreach ($stream in $streams) {
+            if ($null -ne $stream.disposition -and
+                $stream.disposition.PSObject.Properties.Match("forced").Count -gt 0 -and
+                [int]$stream.disposition.forced -eq 1) {
+                $hasForcedSubtitle = $true
+                break
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        HasSubtitle = $hasSubtitle
+        HasForcedSubtitle = $hasForcedSubtitle
+    }
 }
 
 function Get-VideoDurationSeconds {
@@ -1200,14 +1235,17 @@ function Encode-FinalNvenc {
         [int]$Qvbr,
         [string]$AiChoice,
         [bool]$UseNnedi = $false,
+        [bool]$UseSubtitleBurn = $false,
         [string[]]$ExtraArgs = @()
     )
 
     $args = @()
     $args += Get-NvencBaseArgs -Codec $Codec -Qvbr $Qvbr -ExtraArgs $ExtraArgs
     $args += Get-AiModeArgs -AiChoice $AiChoice -UseNnedi $UseNnedi
+    if ($UseSubtitleBurn) {
+        $args += @("--vpp-subburn", "track=1,forced_subs_only=on")
+    }
     $args += @(
-        "--vpp-subburn", "track=1,forced_subs_only=on",
         "--chapter-copy",
         "--audio-copy",
         "-i", $InputFile,
@@ -1228,20 +1266,27 @@ function Encode-FinalCpu {
         [string]$InputFile,
         [string]$OutputFile,
         [string]$Codec,
-        [int]$QualityValue
+        [int]$QualityValue,
+        [bool]$UseSubtitleBurn = $false
     )
 
-    Write-Warn "CPU-Fallback aktiv: Forced-Only Subburn wie in NVEncC ist in ffmpeg nicht 1:1 verfuegbar. Es wird Spur 1 direkt eingebrannt."
+    if ($UseSubtitleBurn) {
+        Write-Warn "CPU-Fallback aktiv: Forced-Only Subburn wie in NVEncC ist in ffmpeg nicht 1:1 verfuegbar. Es wird Spur 1 direkt eingebrannt."
+    } else {
+        Write-Warn "CPU-Fallback aktiv: Keine verwertbaren Untertitel gefunden, es wird ohne Untertitel weiterverarbeitet."
+    }
 
-    $subtitlePath = $InputFile.Replace("\", "\\").Replace(":", "\:").Replace("'", "\'")
-    $subtitleFilter = "subtitles='$subtitlePath':si=0"
+    $subtitleFilter = $null
+    if ($UseSubtitleBurn) {
+        $subtitlePath = $InputFile.Replace("\", "\\").Replace(":", "\:").Replace("'", "\'")
+        $subtitleFilter = "subtitles='$subtitlePath':si=0"
+    }
 
     if ($Codec -eq "av1") {
         $args = @(
             "-hide_banner", "-y",
             "-i", $InputFile,
             "-map", "0",
-            "-vf", $subtitleFilter,
             "-c:v", "libsvtav1",
             "-pix_fmt", "yuv420p10le",
             "-preset", "4",
@@ -1255,7 +1300,6 @@ function Encode-FinalCpu {
             "-hide_banner", "-y",
             "-i", $InputFile,
             "-map", "0",
-            "-vf", $subtitleFilter,
             "-c:v", "libx265",
             "-preset", "slow",
             "-pix_fmt", "yuv420p10le",
@@ -1264,6 +1308,21 @@ function Encode-FinalCpu {
             "-c:s", "copy",
             $OutputFile
         )
+    }
+
+    if ($UseSubtitleBurn) {
+        $args = @(
+            $args[0..3]
+        )
+    }
+
+    if ($UseSubtitleBurn -and -not [string]::IsNullOrWhiteSpace($subtitleFilter)) {
+        $args = @(
+            "-hide_banner", "-y",
+            "-i", $InputFile,
+            "-map", "0",
+            "-vf", $subtitleFilter
+        ) + $args[4..($args.Count - 1)]
     }
 
     & $FFmpeg @args
@@ -1478,9 +1537,16 @@ try {
     $totalDurationSeconds = Get-VideoDurationSeconds -FFprobe $tools.FFprobe -InputFile $inputFile
     Write-Info "Gesamtdauer Quelle: $(Format-TimeCode -TotalSeconds $totalDurationSeconds) ($totalDurationSeconds s)"
 
-    $hasSubtitle = Get-SubtitleTrackIndexZeroExists -FFprobe $tools.FFprobe -InputFile $inputFile
-    if (-not $hasSubtitle) {
-        throw "Track 1 (Index 0) fuer Untertitel wurde nicht gefunden. Forced-Subburn setzt mindestens eine Untertitelspur voraus."
+    $subtitleStatus = Get-SubtitleTrackStatus -FFprobe $tools.FFprobe -InputFile $inputFile
+    $useSubtitleBurn = [bool]$subtitleStatus.HasForcedSubtitle
+    if ($useSubtitleBurn) {
+        Write-Info "Forced-Untertitel erkannt: Subburn wird aktiviert."
+    }
+    elseif ($subtitleStatus.HasSubtitle) {
+        Write-Warn "Untertitelspur gefunden, aber kein Forced-Flag auf Track 1. Es wird ohne Untertitel weitergearbeitet."
+    }
+    else {
+        Write-Warn "Keine Untertitelspur gefunden. Es wird ohne Untertitel weitergearbeitet."
     }
 
     $isInterlacedSource = $false
@@ -1611,7 +1677,10 @@ try {
         $finalArgsPreview = @()
         $finalArgsPreview += Get-NvencBaseArgs -Codec $codec -Qvbr $qvbr -ExtraArgs $nvencExtraArgs
         $finalArgsPreview += Get-AiModeArgs -AiChoice $aiChoice -UseNnedi $useNnedi
-        $finalArgsPreview += @("--vpp-subburn", "track=1,forced_subs_only=on", "--chapter-copy", "--audio-copy")
+        if ($useSubtitleBurn) {
+            $finalArgsPreview += @("--vpp-subburn", "track=1,forced_subs_only=on")
+        }
+        $finalArgsPreview += @("--chapter-copy", "--audio-copy")
 
         $speedFactor = [double]$fit.SpeedFactor
         if ($speedFactor -gt 0) {
@@ -1635,7 +1704,7 @@ try {
         }
 
         Write-Info "Finaler Encode startet (Work-Directory): $outputFileWork"
-        Encode-FinalNvenc -Nvenc $tools.NVEncC -InputFile $inputFile -OutputFile $outputFileWork -Codec $codec -Qvbr $qvbr -AiChoice $aiChoice -UseNnedi $useNnedi -ExtraArgs $nvencExtraArgs
+        Encode-FinalNvenc -Nvenc $tools.NVEncC -InputFile $inputFile -OutputFile $outputFileWork -Codec $codec -Qvbr $qvbr -AiChoice $aiChoice -UseNnedi $useNnedi -UseSubtitleBurn $useSubtitleBurn -ExtraArgs $nvencExtraArgs
 
         if (Test-Path -LiteralPath $outputFile) {
             Remove-Item -LiteralPath $outputFile -Force
@@ -1669,11 +1738,19 @@ try {
         $outputFileWork = Join-Path $workDir $outputName
         $outputFile = Join-Path $tools.Results $outputName
 
-        $cpuParams = if ($codec -eq "av1") {
-            "-vf subtitles=... -c:v libsvtav1 -pix_fmt yuv420p10le -preset 4 -crf $quality -c:a copy -c:s copy"
+        $cpuParams = if ($useSubtitleBurn) {
+            if ($codec -eq "av1") {
+                "-vf subtitles=... -c:v libsvtav1 -pix_fmt yuv420p10le -preset 4 -crf $quality -c:a copy -c:s copy"
+            }
+            else {
+                "-vf subtitles=... -c:v libx265 -pix_fmt yuv420p10le -preset slow -crf $quality -c:a copy -c:s copy"
+            }
+        }
+        elseif ($codec -eq "av1") {
+            "-c:v libsvtav1 -pix_fmt yuv420p10le -preset 4 -crf $quality -c:a copy -c:s copy"
         }
         else {
-            "-vf subtitles=... -c:v libx265 -pix_fmt yuv420p10le -preset slow -crf $quality -c:a copy -c:s copy"
+            "-c:v libx265 -pix_fmt yuv420p10le -preset slow -crf $quality -c:a copy -c:s copy"
         }
 
         $speedFactor = [double]$fitCpu.SpeedFactor
@@ -1689,7 +1766,7 @@ try {
         }
 
         Write-Info "Finaler CPU Encode startet (Work-Directory): $outputFileWork"
-        Encode-FinalCpu -FFmpeg $tools.FFmpeg -InputFile $inputFile -OutputFile $outputFileWork -Codec $codec -QualityValue $quality
+        Encode-FinalCpu -FFmpeg $tools.FFmpeg -InputFile $inputFile -OutputFile $outputFileWork -Codec $codec -QualityValue $quality -UseSubtitleBurn $useSubtitleBurn
 
         if (Test-Path -LiteralPath $outputFile) {
             Remove-Item -LiteralPath $outputFile -Force
