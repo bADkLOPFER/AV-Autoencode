@@ -32,4 +32,4 @@ Thumbs.db
 desktop.ini
 .vscode/
 .idea/
-video_tool/__pycache__/
+**/__pycache__/
