@@ -175,8 +175,10 @@ def build_encoder_args(
     output_path = Path(output_path)
 
     extra_list = _sanitize_extra_args(encoder, extra_args)
-    if quality_metric and quality_metric != "none" and encoder == "nvencc":
+    if quality_metric and quality_metric != "none" and encoder == "ffmpeg":
         extra_list.extend(["--metric", quality_metric])
+    if quality_metric and quality_metric != "none" and encoder == "nvencc":
+        extra_list.extend(["--vmaf", quality_metric])
     if denoise_mode and denoise_mode != "off" and encoder == "nvencc":
         extra_list.extend(["--denoise", denoise_mode])
     if grain_mode and grain_mode != "off" and encoder == "nvencc":

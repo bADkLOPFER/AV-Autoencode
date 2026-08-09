@@ -7,14 +7,14 @@ from pathlib import Path
 from typing import Optional
 
 try:
-    from .config import resolve_encoder_choice
+    from .config import recommend_quality_value, resolve_encoder_choice
     from .encoding import build_encoder_args, run_command
-    from .media_analysis import analyze_media, analyze_noise_and_quality as analyze_preflight, has_forced_subtitles, recommend_quality_value
+    from .media_analysis import analyze_media, analyze_noise_and_quality as analyze_preflight, has_forced_subtitles
     from .utils import ensure_dir, logger
 except ImportError:  # pragma: no cover - allows direct execution from the module directory
-    from config import resolve_encoder_choice
+    from config import recommend_quality_value, resolve_encoder_choice
     from encoding import build_encoder_args, run_command
-    from media_analysis import analyze_media, analyze_noise_and_quality as analyze_preflight, has_forced_subtitles, recommend_quality_value
+    from media_analysis import analyze_media, analyze_noise_and_quality as analyze_preflight, has_forced_subtitles
     from utils import ensure_dir, logger
 
 
@@ -34,6 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--denoise", choices=["off", "light", "medium", "heavy"], default=None, help="Denoiser mode")
     parser.add_argument("--grain", choices=["off", "light", "medium", "heavy"], default=None, help="Grain handling mode")
     parser.add_argument("--ffprobe", default=None, help="Optional explicit ffprobe path")
+    parser.add_argument("--ffmpeg", default=None, help="Optional explicit ffmpeg path")
     return parser
 
 
@@ -134,9 +135,9 @@ def choose_ai_mode(cli_choice: Optional[str], default_mode: str) -> str:
     return result["value"] or default_mode
 
 
-def analyze_noise_and_quality(input_path: Path, ffprobe_path: Optional[str]) -> dict:
+def analyze_noise_and_quality(input_path: Path, ffprobe_path: Optional[str], ffmpeg_path: Optional[str] = None) -> dict:
     try:
-        return analyze_preflight(file_path=input_path, ffprobe_path=ffprobe_path)
+        return analyze_preflight(file_path=input_path, ffprobe_path=ffprobe_path, ffmpeg_path=ffmpeg_path)
     except Exception as exc:
         logger.warning("Could not run noise/VMAF preflight analysis: %s", exc)
         return {
@@ -182,7 +183,7 @@ def main() -> int:
         selected_encoder = resolve_encoder_choice(args.encoder)
         source_height = detect_source_height(input_path, args.ffprobe)
         default_ai_mode = get_default_ai_mode(source_height)
-        noise_plan = analyze_noise_and_quality(input_path, args.ffprobe)
+        noise_plan = analyze_noise_and_quality(input_path, args.ffprobe, args.ffmpeg)
 
         selected_codec = choose_codec(args.codec)
         selected_ai_mode = choose_ai_mode(args.ai_choice, default_ai_mode)
@@ -195,6 +196,7 @@ def main() -> int:
         forced_subtitles = has_forced_subtitles(media_info.get("subtitle_streams", []))
         logger.info("Forced subtitles present: %s", forced_subtitles)
 
+        # Qualitäts-Empfehlung wird sauber aus config.py berechnet
         recommended_quality = recommend_quality_value(
             noise_plan,
             codec=selected_codec,
