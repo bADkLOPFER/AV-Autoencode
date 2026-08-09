@@ -136,6 +136,24 @@ def get_ai_mode_args(ai_choice: str = "1", use_nnedi: bool = False) -> list[str]
     return []
 
 
+def _sanitize_extra_args(encoder: str, extra_args: Optional[Sequence[str]] = None) -> list[str]:
+    if not extra_args:
+        return []
+
+    unsupported_flags = {"--vmaf-target", "--vmaf-min", "--vmaf-max"}
+    sanitized: list[str] = []
+
+    for item in extra_args:
+        value = str(item)
+        if encoder == "ffmpeg" and value.startswith("--"):
+            continue
+        if value in unsupported_flags:
+            continue
+        sanitized.append(value)
+
+    return sanitized
+
+
 def build_encoder_args(
     input_path: Path | str,
     output_path: Path | str,
@@ -148,21 +166,29 @@ def build_encoder_args(
     subtitle_burn: bool = False,
     ai_choice: str = "1",
     use_nnedi: bool = False,
+    quality_metric: str = "vmaf",
+    denoise_mode: str = "off",
+    grain_mode: str = "off",
     extra_args: Optional[Sequence[str]] = None,
 ) -> list[str]:
     input_path = Path(input_path)
     output_path = Path(output_path)
 
+    extra_list = _sanitize_extra_args(encoder, extra_args)
+    if quality_metric and quality_metric != "none" and encoder == "nvencc":
+        extra_list.extend(["--metric", quality_metric])
+    if denoise_mode and denoise_mode != "off" and encoder == "nvencc":
+        extra_list.extend(["--denoise", denoise_mode])
+    if grain_mode and grain_mode != "off" and encoder == "nvencc":
+        extra_list.extend(["--grain", grain_mode])
+
     if encoder == "nvencc":
-        # 1. Den echten Pfad zur nvencc64.exe als ERTES Element setzen!
         nvencc_bin = PATHS.get("nvencc")
         if not nvencc_bin:
             raise ValueError("NVEncC path is not configured for this platform.")
 
         args = [str(nvencc_bin)]
-
-        # 2. Danach die Basis-Args anhängen
-        args.extend(get_nvenc_base_args(codec=codec, qvbr=quality_value, extra_args=list(extra_args or [])))
+        args.extend(get_nvenc_base_args(codec=codec, qvbr=quality_value, extra_args=extra_list))
         args.extend(get_ai_mode_args(ai_choice=ai_choice, use_nnedi=use_nnedi))
         if subtitle_burn:
             args.extend(["--vpp-subburn", "track=1,forced_subs_only=on"])
@@ -170,7 +196,6 @@ def build_encoder_args(
         return args
 
     if encoder == "ffmpeg":
-        # 1. Den echten Pfad zur ffmpeg-Binary als ERSTES Element setzen!
         ffmpeg_bin = PATHS.get("ffmpeg")
         if not ffmpeg_bin:
             raise ValueError("FFmpeg path is not configured.")
@@ -182,6 +207,7 @@ def build_encoder_args(
         elif bitrate_mode == "vbr":
             args.extend(["-b:v", str(bitrate), "-maxrate", str(bitrate), "-bufsize", str(max(bitrate * 2, bitrate))])
 
+        args.extend(extra_list)
         args.extend([
             "-c:v",
             "libsvtav1" if codec == "av1" else "libx265",
@@ -201,6 +227,7 @@ def build_encoder_args(
         if subtitle_burn:
             subtitle_filter = f"subtitles='{input_path.as_posix()}':si=0"
             args = [str(ffmpeg_bin), "-hide_banner", "-y", "-i", str(input_path), "-map", "0", "-vf", subtitle_filter]
+            args.extend(extra_list)
             args.extend([
                 "-c:v",
                 "libsvtav1" if codec == "av1" else "libx265",

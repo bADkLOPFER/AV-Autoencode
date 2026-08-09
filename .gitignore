@@ -22,6 +22,7 @@ Results/
 *_test_out.mkv
 *.log
 *.csv
+tests/
 
 # ==========================================
 # Betriebssystem & IDE-Müll
@@ -31,3 +32,4 @@ Thumbs.db
 desktop.ini
 .vscode/
 .idea/
+video_tool/__pycache__/
