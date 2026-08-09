@@ -168,9 +168,11 @@ function Get-SubtitleTrackStatus {
 
     if ($hasSubtitle) {
         foreach ($stream in $streams) {
-            if ($null -ne $stream.disposition -and
+            if ($null -ne $stream -and 
+                $stream.PSObject.Properties.Match("disposition").Count -gt 0 -and
+                $null -ne $stream.disposition -and
                 $stream.disposition.PSObject.Properties.Match("forced").Count -gt 0 -and
-                [int]$stream.disposition.forced -eq 1) {
+               [int]$stream.disposition.forced -eq 1) {
                 $hasForcedSubtitle = $true
                 break
             }
