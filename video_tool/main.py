@@ -85,9 +85,9 @@ def choose_codec(cli_codec: Optional[str]) -> str:
             raw = input().strip().lower()
         except Exception:
             raw = ""
-        if raw in {"1", "av1"}:
+        if raw in {"2", "av1"}:
             result["value"] = "av1"
-        elif raw in {"2", "hevc"}:
+        elif raw in {"1", "hevc"}:
             result["value"] = "hevc"
         elif raw == "":
             result["value"] = "av1"

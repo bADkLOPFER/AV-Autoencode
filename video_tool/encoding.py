@@ -184,9 +184,9 @@ def build_encoder_args(
     if quality_metric and quality_metric != "none" and encoder == "nvencc":
         extra_list.append("--vmaf")
     if denoise_mode and denoise_mode != "off" and encoder == "nvencc":
-        extra_list.extend(["--denoise", denoise_mode])
-    if grain_mode and grain_mode != "off" and encoder == "nvencc":
-        extra_list.extend(["--grain", grain_mode])
+        extra_list.extend(["--vpp-pmd", "apply_count=1,strength=20,threshold=35"])
+    #if grain_mode and grain_mode != "off" and encoder == "nvencc":
+    #    extra_list.extend(["--grain", grain_mode])
 
     if encoder == "nvencc":
         nvencc_bin = PATHS.get("nvencc")
