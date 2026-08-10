@@ -1,37 +1,37 @@
 from __future__ import annotations
 
 import json
+import logging
+import shutil
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 try:
     from .config import PATHS
-    from .utils import cut_test_sample, logger
+    from .utils import cut_test_sample, logger, HWProfile, detect_hardware
 except ImportError:  # pragma: no cover - allows direct execution from the module directory
     from config import PATHS
-    from utils import cut_test_sample, logger
+    from utils import cut_test_sample, logger, HWProfile, detect_hardware
 
-
-def get_video_duration_seconds(file_path: Path | str, ffprobe_path: Optional[Path | str] = None) -> int:
-    input_path = Path(file_path).expanduser()
-    ffprobe = Path(ffprobe_path or PATHS["ffprobe"])
-    command = [str(ffprobe), "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(input_path)]
-
+def get_video_duration(input_path: Path, ffprobe_bin: Optional[Path] = None) -> float:
+    """Ermittelt die Gesamtdauer des Videos in Sekunden via ffprobe."""
+    ffprobe_exe = str(ffprobe_bin) if ffprobe_bin else str(PATHS.get("ffprobe", "ffprobe"))
+    cmd = [
+        ffprobe_exe,
+        "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        str(input_path)
+    ]
     try:
-        completed = subprocess.run(command, capture_output=True, text=True, check=True)
-    except FileNotFoundError as exc:
-        raise FileNotFoundError(f"ffprobe was not found at {ffprobe}.") from exc
-    except subprocess.CalledProcessError as exc:
-        stderr = (exc.stderr or "").strip() or str(exc)
-        raise RuntimeError(f"ffprobe failed for {input_path}: {stderr}") from exc
-
-    raw = (completed.stdout or "").strip()
-    if not raw:
-        raise ValueError("ffprobe did not return a duration value")
-
-    return max(0, int(float(raw)))
-
+        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return float(res.stdout.strip())
+    except Exception as err:
+        logger.error("Fehler beim Ermitteln der Videodauer für %s: %s", input_path.name, err)
+        return 0.0
 
 def _run_ffprobe(ffprobe_path: Optional[Path | str], input_path: Path | str, *extra_args: str) -> Dict[str, Any]:
     ffprobe = Path(ffprobe_path or PATHS["ffprobe"])
@@ -49,37 +49,6 @@ def _run_ffprobe(ffprobe_path: Optional[Path | str], input_path: Path | str, *ex
         return json.loads(completed.stdout or "{}")
     except json.JSONDecodeError as exc:
         raise ValueError(f"Could not parse ffprobe JSON output: {exc}") from exc
-
-
-def analyze_media(file_path: Path | str, ffprobe_path: Optional[Path | str] = None) -> Dict[str, Any]:
-    input_path = Path(file_path).expanduser()
-    if not input_path.exists():
-        raise FileNotFoundError(f"Input file does not exist: {input_path}")
-
-    payload = _run_ffprobe(
-        ffprobe_path,
-        input_path,
-        "-show_streams",
-        "-show_entries",
-        "stream=index,codec_type,codec_name,width,height,r_frame_rate,channels,language,disposition",
-        "-of",
-        "json",
-    )
-
-    streams = payload.get("streams") or []
-    video_streams = [stream for stream in streams if stream.get("codec_type") == "video"]
-    audio_streams = [stream for stream in streams if stream.get("codec_type") == "audio"]
-    subtitle_streams = [stream for stream in streams if stream.get("codec_type") == "subtitle"]
-
-    return {
-        "input_path": input_path,
-        "streams": streams,
-        "video_streams": video_streams,
-        "audio_streams": audio_streams,
-        "subtitle_streams": subtitle_streams,
-        "raw": payload,
-    }
-
 
 def analyze_video(file_path: Path | str, ffprobe_path: Optional[Path | str] = None) -> Dict[str, Any]:
     payload = analyze_media(file_path, ffprobe_path=ffprobe_path)
@@ -108,17 +77,6 @@ def get_video_framerate(video_info: Dict[str, Any]) -> str:
     return str(stream.get("r_frame_rate", "N/A"))
 
 
-def has_forced_subtitles(streams: List[Dict[str, Any]] | Dict[str, Any]) -> bool:
-    if isinstance(streams, dict):
-        streams = streams.get("subtitle_streams") or []
-
-    for stream in streams:
-        disposition = stream.get("disposition") or {}
-        if disposition.get("forced") in (1, "1", True):
-            return True
-    return False
-
-
 def get_audio_details(audio_info: Dict[str, Any]) -> str:
     stream = (audio_info.get("audio_streams") or [{}])[0]
     language = stream.get("language", "N/A")
@@ -126,123 +84,210 @@ def get_audio_details(audio_info: Dict[str, Any]) -> str:
     return f"{language}, {channels} channels"
 
 
-def analyze_noise_and_quality(
-    file_path: Path | str,
-    ffprobe_path: Optional[Path | str] = None,
-    ffmpeg_path: Optional[Path | str] = None,
-    sample_duration_seconds: int = 5,
-) -> Dict[str, Any]:
-    input_path = Path(file_path).expanduser()
-    if not input_path.exists():
-        raise FileNotFoundError(f"Input file does not exist: {input_path}")
-
+def analyze_media(input_path: Path, ffprobe_path: Optional[Path | str] = None) -> Dict[str, Any]:
+    """Liest Streams und Metadaten der Mediendatei via ffprobe aus."""
+    ffprobe_exe = ffprobe_path if ffprobe_path else str(PATHS.get("ffprobe", "ffprobe"))
+    cmd = [
+        ffprobe_exe,
+        "-v", "quiet",
+        "-print_format", "json",
+        "-show_format",
+        "-show_streams",
+        str(input_path)
+    ]
     try:
-        total_duration = get_video_duration_seconds(input_path, ffprobe_path=ffprobe_path)
-    except Exception:
-        total_duration = 0
+        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        data = json.loads(res.stdout)
 
-    if total_duration <= 0:
-        sample_points = [0]
+        video_streams = [s for s in data.get("streams", []) if s.get("codec_type") == "video"]
+        audio_streams = [s for s in data.get("streams", []) if s.get("codec_type") == "audio"]
+        subtitle_streams = [s for s in data.get("streams", []) if s.get("codec_type") == "subtitle"]
+
+        return {
+            "format": data.get("format", {}),
+            "video_streams": video_streams,
+            "audio_streams": audio_streams,
+            "subtitle_streams": subtitle_streams,
+        }
+    except Exception as err:
+        logger.error("Fehler bei analyze_media für %s: %s", input_path.name, err)
+        return {"video_streams": [], "audio_streams": [], "subtitle_streams": []}
+
+
+def has_forced_subtitles(subtitle_streams: List[Dict[str, Any]]) -> bool:
+    """Prüft, ob in den Untertitelstreams Forced-Flags vorhanden sind."""
+    for stream in subtitle_streams:
+        disposition = stream.get("disposition", {})
+        if disposition.get("forced") == 1:
+            return True
+    return False
+
+
+def analyze_noise_and_quality(
+    file_path: Optional[Path] = None,
+    input_path: Optional[Path] = None,
+    ffprobe_path: Optional[str] = None,
+    ffmpeg_path: Optional[str] = None,
+    work_dir: Optional[Path] = None,
+    sample_duration_seconds: int = 10,
+    sample_points_pct: Tuple[float, float, float] = (0.50, 0.33, 0.66),
+    **kwargs
+) -> Dict[str, Any]:
+    """
+    Multi-Point Rauschanalyse. Vollständig kompatibel mit den Parametern aus main.py.
+    """
+    target_file = Path(file_path or input_path)
+    ffmpeg_exe = Path(ffmpeg_path) if ffmpeg_path else Path(PATHS.get("ffmpeg", "ffmpeg"))
+    ffprobe_exe = Path(ffprobe_path) if ffprobe_path else Path(PATHS.get("ffprobe", "ffprobe"))
+
+    if work_dir is None:
+        work_dir = target_file.parent / "_temp_analysis"
     else:
-        sample_points = [max(0, total_duration // 2), max(0, total_duration // 3), max(0, (total_duration * 2) // 3)]
+        work_dir = Path(work_dir)
 
-    work_dir = input_path.parent / f"{input_path.stem}_preflight"
     work_dir.mkdir(parents=True, exist_ok=True)
-    ffmpeg = Path(ffmpeg_path or PATHS["ffmpeg"])
+    hw: HWProfile = detect_hardware(ffmpeg_exe)
 
+    duration = get_video_duration(target_file, ffprobe_exe)
+    if duration <= 0.0:
+        logger.warning("Videodauer ungültig. Verwende Standard-Fallback-Werte.")
+        return _build_fallback_result(sample_duration_seconds, [])
+
+    sample_points = [int(duration * pct) for pct in sample_points_pct]
     deltas: List[float] = []
-    for index, start_seconds in enumerate(sample_points):
+
+    for index, start_sec in enumerate(sample_points):
         raw_path = work_dir / f"sample_{index}_raw.mkv"
         denoised_path = work_dir / f"sample_{index}_denoised.mkv"
-        cut_test_sample(input_path, raw_path, start_seconds, sample_duration_seconds, ffmpeg_path=ffmpeg)
 
-        denoise_cmd = [
-            str(ffmpeg),
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-ss",
-            str(start_seconds),
-            "-i",
-            str(input_path),
-            "-t",
-            str(sample_duration_seconds),
-            "-map",
-            "0:v:0",
-            "-an",
-            "-sn",
-            "-vf",
-            "hqdn3d=2.0:2.0:8:8",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-crf",
-            "18",
-            str(denoised_path),
-        ]
+        base_cmd = [str(ffmpeg_exe), "-hide_banner", "-loglevel", "error", "-y"]
+        if hw.hwaccel_flag:
+            base_cmd.extend(["-hwaccel", hw.hwaccel_flag])
+
+        # Raw Sample
+        raw_cmd = base_cmd + [
+            "-ss", str(start_sec),
+            "-i", str(target_file),
+            "-t", str(sample_duration_seconds),
+            "-map", "0:v:0", "-an", "-sn",
+            "-c:v", hw.h264_encoder,
+        ] + hw.sample_preset_args + [str(raw_path)]
+
+        # Denoised Sample
+        denoise_cmd = base_cmd + [
+            "-ss", str(start_sec),
+            "-i", str(target_file),
+            "-t", str(sample_duration_seconds),
+            "-map", "0:v:0", "-an", "-sn",
+            "-vf", "hqdn3d=3:3:6:6",
+            "-c:v", hw.h264_encoder,
+        ] + hw.sample_preset_args + [str(denoised_path)]
+
         try:
+            subprocess.run(raw_cmd, capture_output=True, text=True, check=True)
             subprocess.run(denoise_cmd, capture_output=True, text=True, check=True)
-        except FileNotFoundError as exc:
-            raise FileNotFoundError(f"ffmpeg was not found at {ffmpeg}.") from exc
-        except subprocess.CalledProcessError as exc:
-            stderr = (exc.stderr or "").strip() or str(exc)
-            raise RuntimeError(f"ffmpeg denoise sample creation failed: {stderr}") from exc
 
-        if raw_path.exists() and denoised_path.exists():
-            raw_size = raw_path.stat().st_size
-            denoised_size = denoised_path.stat().st_size
-            if raw_size > 0:
-                deltas.append((raw_size - denoised_size) / raw_size)
+            if raw_path.exists() and denoised_path.exists():
+                raw_size = raw_path.stat().st_size
+                denoised_size = denoised_path.stat().st_size
+                if raw_size > 0:
+                    delta_pct = ((raw_size - denoised_size) / raw_size) * 100.0
+                    deltas.append(max(0.0, delta_pct))
+        except subprocess.CalledProcessError as err:
+            logger.warning("Fehler beim Generieren der Samples an Punkt %ds: %s", start_sec, err)
 
-    if not deltas:
-        noise_level = "none"
-        denoise_mode = "off"
-        quality_value = 97
-        extra_args: List[str] = []
-    else:
+    shutil.rmtree(work_dir, ignore_errors=True)
+
+    if len(deltas) == 3:
+        weighted_delta = (deltas[0] * 0.50) + (deltas[1] * 0.25) + (deltas[2] * 0.25)
+    elif deltas:
         weighted_delta = sum(deltas) / len(deltas)
-        if weighted_delta >= 0.50:
-            noise_level = "heavy"
-            denoise_mode = "heavy"
-            quality_value = 94
-            extra_args = ["--vpp-pmd", "apply_count=2,strength=35,threshold=45"]
-        elif weighted_delta >= 0.30:
-            noise_level = "medium"
-            denoise_mode = "medium"
-            quality_value = 96
-            extra_args = ["--vpp-pmd", "apply_count=1,strength=20,threshold=35"]
-        elif weighted_delta >= 0.25:
-            noise_level = "light"
-            denoise_mode = "light"
-            quality_value = 95
-            extra_args = []
-        else:
-            noise_level = "none"
-            denoise_mode = "off"
-            quality_value = 97
-            extra_args = []
+    else:
+        weighted_delta = 0.0
 
-    target_vmaf = 97.0 if quality_value >= 97 else float(quality_value)
-    lower_bound = round(max(90.0, target_vmaf - 1.5), 1)
-    upper_bound = round(min(100.0, target_vmaf + 0.5), 1)
+    weighted_delta = round(weighted_delta, 1)
+    logger.info("Multi-Point Pre-Flight Rauschanalyse abgeschlossen. Delta: %.1f%%", weighted_delta)
 
-    return {
-        "denoise_mode": denoise_mode,
-        "grain_mode": "off",
-        "quality_value": quality_value,
-        "target_vmaf": target_vmaf,
-        "lower_bound": lower_bound,
-        "upper_bound": upper_bound,
-        "extra_args": extra_args,
-        "noise_detected": noise_level != "none",
-        "noise_level": noise_level,
-        "delta": round(sum(deltas) / len(deltas), 3) if deltas else 0.0,
+    result = _evaluate_thresholds(weighted_delta)
+    result.update({
+        "delta": weighted_delta,
         "sample_duration_seconds": sample_duration_seconds,
         "sample_points": sample_points,
-    }
+        "hw_profile": hw.name,
+    })
 
+    return result
+
+
+def _evaluate_thresholds(weighted_delta: float) -> Dict[str, Any]:
+    """Erzeugt das vollständige Dictionary inklusive aller von main.py erwarteten Keys."""
+    if weighted_delta >= 28.0:
+        return {
+            "noise_level": "heavy",
+            "denoise_mode": "heavy",
+            "grain_mode": "heavy",
+            "quality_value": 94,
+            "target_vmaf": 93.5,
+            "lower_bound": 92.5,
+            "upper_bound": 94.5,
+            "filter_args": ["hqdn3d=4:4:8:8"],
+            "extra_args": [],
+            "noise_detected": True,
+            "noise_msg": "Starkes Rauschen erkannt.",
+        }
+    elif weighted_delta >= 18.0:
+        return {
+            "noise_level": "medium",
+            "denoise_mode": "medium",
+            "grain_mode": "medium",
+            "quality_value": 95,
+            "target_vmaf": 95.0,
+            "lower_bound": 94.0,
+            "upper_bound": 96.0,
+            "filter_args": ["hqdn3d=3:3:6:6"],
+            "extra_args": [],
+            "noise_detected": True,
+            "noise_msg": "Mittleres Rauschen erkannt.",
+        }
+    elif weighted_delta >= 10.0:
+        return {
+            "noise_level": "light",
+            "denoise_mode": "light",
+            "grain_mode": "light",
+            "quality_value": 96,
+            "target_vmaf": 96.0,
+            "lower_bound": 95.0,
+            "upper_bound": 97.0,
+            "filter_args": ["hqdn3d=1.5:1.5:3:3"],
+            "extra_args": [],
+            "noise_detected": True,
+            "noise_msg": "Leichtes Rauschen erkannt.",
+        }
+    else:
+        return {
+            "noise_level": "none",
+            "denoise_mode": "off",
+            "grain_mode": "off",
+            "quality_value": 97,
+            "target_vmaf": 97.0,
+            "lower_bound": 96.5,
+            "upper_bound": 97.5,
+            "filter_args": [],
+            "extra_args": [],
+            "noise_detected": False,
+            "noise_msg": "Kein starkes Rauschen erkannt.",
+        }
+
+
+def _build_fallback_result(sample_duration: int, sample_points: List[int]) -> Dict[str, Any]:
+    res = _evaluate_thresholds(0.0)
+    res.update({
+        "delta": 0.0,
+        "sample_duration_seconds": sample_duration,
+        "sample_points": sample_points,
+        "hw_profile": "unknown",
+    })
+    return res
 
 if __name__ == "__main__":
     import sys
@@ -253,4 +298,3 @@ if __name__ == "__main__":
     logger.info("Video framerate: %s", get_video_framerate(media_info))
     logger.info("Forced subtitles: %s", has_forced_subtitles(media_info.get("subtitle_streams", [])))
     logger.info("Audio details: %s", get_audio_details({"audio_streams": media_info.get("audio_streams", [])}))
-    

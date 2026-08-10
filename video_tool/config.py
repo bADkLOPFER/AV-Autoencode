@@ -4,13 +4,10 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-try:
-    from .utils import _clamp
-except ImportError:
-    from utils import _clamp
-
 SCRIPT_DIR = Path(__file__).resolve().parent
 
+def _clamp(val: float | int, min_val: float | int, max_val: float | int):
+    return max(min_val, min(val, max_val))
 
 def detect_platform() -> str:
     if sys.platform.startswith("win"):

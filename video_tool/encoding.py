@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import logging
+import json
+import re
 import subprocess
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Any, Dict, List
 
 try:
     from .config import PATHS
-    from .utils import logger
+    from .utils import HWProfile, detect_hardware, logger
 except ImportError:  # pragma: no cover - allows direct execution from the module directory
     from config import PATHS
-    from utils import logger
+    from utils import HWProfile, detect_hardware, logger
 
+logger = logging.getLogger(__name__)
 
 def get_nvenc_base_args(codec: str = "hevc", qvbr: int = 22, extra_args: Optional[Sequence[str]] = None) -> list[str]:
     if codec == "hevc":
@@ -178,7 +182,7 @@ def build_encoder_args(
     if quality_metric and quality_metric != "none" and encoder == "ffmpeg":
         extra_list.extend(["--metric", quality_metric])
     if quality_metric and quality_metric != "none" and encoder == "nvencc":
-        extra_list.extend(["--vmaf", quality_metric])
+        extra_list.append("--vmaf")
     if denoise_mode and denoise_mode != "off" and encoder == "nvencc":
         extra_list.extend(["--denoise", denoise_mode])
     if grain_mode and grain_mode != "off" and encoder == "nvencc":
@@ -250,6 +254,147 @@ def build_encoder_args(
 
     raise ValueError(f"Unknown encoder '{encoder}'.")
 
+def map_denoise_to_filter(denoise_mode: str) -> Optional[str]:
+    """Überführt den Denoise-Modus in den passenden FFmpeg Video-Filter."""
+    filters = {
+        "light": "hqdn3d=1.5:1.5:3:3",
+        "medium": "hqdn3d=3:3:6:6",
+        "heavy": "hqdn3d=4:4:8:8",
+    }
+    return filters.get(denoise_mode.lower())
+
+def build_vmaf_check_cmd(
+    input_path: Path,
+    sample_start: int,
+    sample_duration: int,
+    crf_or_qp: int,
+    codec: str,  # "hevc" oder "h264"
+    denoise_mode: str,
+    output_sample_path: Path,
+    vmaf_log_path: Path,
+    ffmpeg_bin: Path = Path("ffmpeg")
+) -> List[str]:
+    """Erstellt ein Test-Sample mit dem Ziel-Encoder und berechnet den VMAF-Score."""
+    hw: HWProfile = detect_hardware(ffmpeg_bin)
+    
+    # 1. Encoder-Wahl basierend auf HWProfile
+    if codec.lower() == "hevc":
+        encoder = hw.hevc_encoder
+    else:
+        encoder = hw.h264_encoder
+
+    # 2. Filter-Kette zusammensetzen
+    v_filters: List[str] = []
+    denoise_filter = map_denoise_to_filter(denoise_mode)
+    if denoise_filter:
+        v_filters.append(denoise_filter)
+
+    cmd = [str(ffmpeg_bin), "-hide_banner", "-loglevel", "error", "-y"]
+    if hw.hwaccel_flag:
+        cmd.extend(["-hwaccel", hw.hwaccel_flag])
+
+    cmd.extend([
+        "-ss", str(sample_start),
+        "-i", str(input_path),
+        "-t", str(sample_duration),
+        "-map", "0:v:0", "-an", "-sn",
+        "-c:v", encoder,
+    ])
+
+    # Rate-Control Parameter anpassen
+    if hw.name == "nvenc":
+        cmd.extend(["-rc", "constqp", "-qp", str(crf_or_qp)])
+    elif hw.name == "videotoolbox":
+        cmd.extend(["-q:v", str(crf_or_qp)])
+    else:
+        cmd.extend(["-crf", str(crf_or_qp)])
+
+    if v_filters:
+        cmd.extend(["-vf", ",".join(v_filters)])
+
+    cmd.append(str(output_sample_path))
+    return cmd
+
+
+def run_vmaf_score(
+    reference_path: Path,
+    encoded_sample_path: Path,
+    sample_start: int,
+    sample_duration: int,
+    ffmpeg_bin: Path = Path("ffmpeg")
+) -> float:
+    """Führt libvmaf-Vergleich zwischen Original-Ausschnitt und Sample durch."""
+    vmaf_filter = (
+        f"[1:v][0:v]libvmaf="
+        f"log_fmt=json:log_path=vmaf_temp.json:n_threads=4"
+    )
+
+    cmd = [
+        str(ffmpeg_bin), "-hide_banner", "-loglevel", "error", "-y",
+        "-ss", str(sample_start),
+        "-i", str(reference_path),
+        "-i", str(encoded_sample_path),
+        "-t", str(sample_duration),
+        "-filter_complex", vmaf_filter,
+        "-f", "null", "-"
+    ]
+
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, check=True)
+        vmaf_json = Path("vmaf_temp.json")
+        if vmaf_json.exists():
+            data = json.loads(vmaf_json.read_text(encoding="utf-8"))
+            vmaf_json.unlink(missing_ok=True)
+            return float(data["pooled_metrics"]["vmaf"]["mean"])
+    except Exception as err:
+        logger.error("Fehler bei der VMAF-Berechnung: %s", err)
+    
+    return 0.0
+
+
+def build_final_encode_cmd(
+    input_path: Path,
+    output_path: Path,
+    quality_val: int,
+    codec: str,
+    denoise_mode: str,
+    ffmpeg_bin: Path = Path("ffmpeg"),
+    audio_passthrough: bool = True
+) -> List[str]:
+    """Baut das finale Haupt-Encoding-Kommando auf."""
+    hw: HWProfile = detect_hardware(ffmpeg_bin)
+    encoder = hw.hevc_encoder if codec.lower() == "hevc" else hw.h264_encoder
+
+    cmd = [str(ffmpeg_bin), "-hide_banner", "-loglevel", "info", "-y"]
+    if hw.hwaccel_flag:
+        cmd.extend(["-hwaccel", hw.hwaccel_flag])
+
+    cmd.extend([
+        "-i", str(input_path),
+        "-c:v", encoder,
+    ])
+
+    # Qualitäts-Zuordnung je nach Treiber
+    if hw.name == "nvenc":
+        cmd.extend(["-preset", "p6", "-rc", "vbr", "-cq", str(quality_val)])
+    elif hw.name == "videotoolbox":
+        cmd.extend(["-q:v", str(quality_val)])
+    else:
+        cmd.extend(["-preset", "medium", "-crf", str(quality_val)])
+
+    # Denoise-Filter anhängen
+    denoise_filter = map_denoise_to_filter(denoise_mode)
+    if denoise_filter:
+        cmd.extend(["-vf", denoise_filter])
+
+    # Audio & Subtitle Handling
+    if audio_passthrough:
+        cmd.extend(["-c:a", "copy", "-c:s", "copy"])
+    else:
+        cmd.extend(["-c:a", "aac", "-b:a", "192k", "-c:s", "copy"])
+
+    cmd.append(str(output_path))
+    return cmd
 
 def run_command(cmd_args: Sequence[str | Path]) -> subprocess.CompletedProcess:
     command = [str(item) for item in cmd_args]

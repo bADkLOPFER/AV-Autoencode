@@ -6,16 +6,20 @@ import threading
 from pathlib import Path
 from typing import Optional
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
 try:
-    from .config import recommend_quality_value, resolve_encoder_choice
+    from .config import recommend_quality_value, resolve_encoder_choice, PATHS
     from .encoding import build_encoder_args, run_command
     from .media_analysis import analyze_media, analyze_noise_and_quality as analyze_preflight, has_forced_subtitles
-    from .utils import ensure_dir, logger
+    from .utils import ensure_dir, logger, HWProfile, detect_hardware
 except ImportError:  # pragma: no cover - allows direct execution from the module directory
-    from config import recommend_quality_value, resolve_encoder_choice
+    from config import recommend_quality_value, resolve_encoder_choice, PATHS
     from encoding import build_encoder_args, run_command
     from media_analysis import analyze_media, analyze_noise_and_quality as analyze_preflight, has_forced_subtitles
-    from utils import ensure_dir, logger
+    from utils import ensure_dir, logger, HWProfile, detect_hardware
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -39,13 +43,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def resolve_output_path(input_path: Path, output_path: Optional[str]) -> Path:
-    if output_path:
-        out = Path(output_path).expanduser().resolve()
+    target = Path(output_path).expanduser().resolve() if output_path else PATHS["results"]
+    if target.is_dir() or target.suffix == "":
+        ensure_dir(target)
+        out = target / f"{input_path.stem}_encoded.mkv"
     else:
-        out = input_path.with_name(f"{input_path.stem}_encoded.mkv")
+        ensure_dir(target.parent)
+        out = target
 
     if out == input_path:
-        out = input_path.with_name(f"{input_path.stem}_encoded_v2.mkv")
+        out = out.with_name(f"{input_path.stem}_encoded_v2.mkv")
 
     return out
 
@@ -67,8 +74,9 @@ def choose_codec(cli_codec: Optional[str]) -> str:
     if not sys.stdin.isatty():
         return "av1"
 
-    print("Codec-Auswahl (10 Sekunden Timeout): [1] AV1 [2] HEVC")
-    print("Standard: AV1")
+    print("Codec-Auswahl (10 Sekunden Timeout):")
+    print("1) HEVC")
+    print("2) AV1 <-- Default")
 
     result = {"value": None}
 
@@ -139,7 +147,7 @@ def analyze_noise_and_quality(input_path: Path, ffprobe_path: Optional[str], ffm
     try:
         return analyze_preflight(file_path=input_path, ffprobe_path=ffprobe_path, ffmpeg_path=ffmpeg_path)
     except Exception as exc:
-        logger.warning("Could not run noise/VMAF preflight analysis: %s", exc)
+        logger.warning("Could not run noise/VMAF preflight analysis: %s", exc, exc_info=True)
         return {
             "denoise_mode": "off",
             "grain_mode": "off",
