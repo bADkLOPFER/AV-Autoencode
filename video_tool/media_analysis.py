@@ -50,20 +50,6 @@ def _run_ffprobe(ffprobe_path: Optional[Path | str], input_path: Path | str, *ex
     except json.JSONDecodeError as exc:
         raise ValueError(f"Could not parse ffprobe JSON output: {exc}") from exc
 
-def analyze_video(file_path: Path | str, ffprobe_path: Optional[Path | str] = None) -> Dict[str, Any]:
-    payload = analyze_media(file_path, ffprobe_path=ffprobe_path)
-    return {"video_streams": payload.get("video_streams", [])}
-
-
-def analyze_audio(file_path: Path | str, ffprobe_path: Optional[Path | str] = None) -> Dict[str, Any]:
-    payload = analyze_media(file_path, ffprobe_path=ffprobe_path)
-    return {"audio_streams": payload.get("audio_streams", [])}
-
-
-def analyze_subtitles(file_path: Path | str, ffprobe_path: Optional[Path | str] = None) -> Dict[str, Any]:
-    payload = analyze_media(file_path, ffprobe_path=ffprobe_path)
-    return {"subtitle_streams": payload.get("subtitle_streams", [])}
-
 
 def get_video_resolution(video_info: Dict[str, Any]) -> str:
     stream = (video_info.get("video_streams") or [{}])[0]
