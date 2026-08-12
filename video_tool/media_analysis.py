@@ -11,10 +11,10 @@ logger = logging.getLogger(__name__)
 
 try:
     from .config import PATHS
-    from .utils import cut_test_sample, logger, HWProfile, detect_hardware
+    from .utils import logger, HWProfile, detect_hardware
 except ImportError:  # pragma: no cover - allows direct execution from the module directory
     from config import PATHS
-    from utils import cut_test_sample, logger, HWProfile, detect_hardware
+    from utils import logger, HWProfile, detect_hardware
 
 def get_video_duration(input_path: Path, ffprobe_bin: Optional[Path] = None) -> float:
     """Ermittelt die Gesamtdauer des Videos in Sekunden via ffprobe."""

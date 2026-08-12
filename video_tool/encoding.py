@@ -261,29 +261,32 @@ def build_vmaf_check_cmd(
 def run_vmaf_score(
     reference_path: Path,
     encoded_sample_path: Path,
-    sample_start: int,
-    sample_duration: int,
+    sample_start: int = 0,
+    sample_duration: int = 10,
     ffmpeg_bin: Path = Path("ffmpeg")
 ) -> float:
-    """Führt den libvmaf-Vergleich zwischen Original-Ausschnitt und Sample durch."""
+    """Führt den libvmaf-Vergleich durch, resetted Timestamps und erzwingt 10-Bit YUV."""
+    vmaf_json = Path("vmaf_temp.json")
+    if vmaf_json.exists():
+        vmaf_json.unlink(missing_ok=True)
+
     vmaf_filter = (
-        f"[1:v][0:v]libvmaf="
-        f"log_fmt=json:log_path=vmaf_temp.json:n_threads=4"
+        "[0:v]setpts=PTS-STARTPTS,format=yuv420p10le[ref];"
+        "[1:v]setpts=PTS-STARTPTS,format=yuv420p10le[dist];"
+        "[dist][ref]scale2ref[dist_sc][ref_sc];"
+        "[dist_sc][ref_sc]libvmaf=log_fmt=json:log_path=vmaf_temp.json:n_threads=4"
     )
 
     cmd = [
         str(ffmpeg_bin), "-hide_banner", "-loglevel", "error", "-y",
-        "-ss", str(sample_start),
         "-i", str(reference_path),
         "-i", str(encoded_sample_path),
-        "-t", str(sample_duration),
         "-filter_complex", vmaf_filter,
         "-f", "null", "-"
     ]
 
     try:
         subprocess.run(cmd, capture_output=True, text=True, check=True)
-        vmaf_json = Path("vmaf_temp.json")
         if vmaf_json.exists():
             data = json.loads(vmaf_json.read_text(encoding="utf-8"))
             vmaf_json.unlink(missing_ok=True)

@@ -8,9 +8,16 @@ from pathlib import Path
 from typing import Optional, List, Union
 import sys
 
-from .config import PATHS
+logger = logging.getLogger("video_tool")
 
-logger = logging.getLogger(__name__)
+#try:
+#    from .config import PATHS
+#except ImportError:  # pragma: no cover - allows direct execution from the module directory
+#    from config import PATHS
+
+def _clamp(value: float, min_val: float, max_val: float) -> float:
+    """Begrenzt einen Wert auf den Bereich [min_val, max_val]."""
+    return max(min_val, min(value, max_val))
 
 @dataclass
 class HWProfile:
@@ -140,18 +147,3 @@ def ensure_dir(path: Union[str, Path]) -> Path:
     path_obj = Path(path)
     path_obj.mkdir(parents=True, exist_ok=True)
     return path_obj
-
-
-def _clamp(value: float, lower: float, upper: float) -> float:
-    return max(lower, min(upper, value))
-
-
-    try:
-        subprocess.run(command, capture_output=True, text=True, check=True)
-    except FileNotFoundError as exc:
-        raise FileNotFoundError(f"ffmpeg was not found at {ffmpeg}.") from exc
-    except subprocess.CalledProcessError as exc:
-        stderr = (exc.stderr or "").strip() or str(exc)
-        raise RuntimeError(f"ffmpeg sample extraction failed: {stderr}") from exc
-
-    return output
