@@ -8,12 +8,13 @@ from pathlib import Path
 from typing import Optional, List, Union
 import sys
 
+try:
+    from .paths import PATHS
+except ImportError: 
+    from paths import PATHS
+
 logger = logging.getLogger("video_tool")
 
-#try:
-#    from .config import PATHS
-#except ImportError:  # pragma: no cover - allows direct execution from the module directory
-#    from config import PATHS
 
 def _clamp(value: float, min_val: float, max_val: float) -> float:
     """Begrenzt einen Wert auf den Bereich [min_val, max_val]."""
@@ -150,18 +151,38 @@ def ensure_dir(path: Union[str, Path]) -> Path:
 
 def calculate_adjusted_speed_factor(test_speed_factor: float, ai_choice: str) -> float:
     """
-    Passt den im 3-minütigen Testlauf ermittelten SpeedFactor 
-    basierend auf der gewählten Filterkette an.
+    Berechnet den finalen Geschwindigkeitsfaktor unter Berücksichtigung von 
+    Test-Speed, AI/Filter-Option und der zugrundeliegenden Hardware-Architektur.
     """
-    speed_factor = float(test_speed_factor)
+    hw_profile = detect_hardware()
+
+    # 1. Hardware-spezifische Basis-Gewichtung relativ zu NVEncC
+    hw_multipliers = {
+        "nvenc": 1.0,          # Referenz (z.B. RTX-Grafikkarte)
+        "videotoolbox": 0.95,  # Apple Silicon Media Engine
+        "qsv": 0.85,           # Intel QuickSync
+        "amf": 0.80,           # AMD AMF
+        "cpu": 0.15            # Reine Software-Berechnung (deutlich langsamer)
+    }
     
-    if speed_factor > 0:
-        if ai_choice in ("3", "4"):  # Intensives Upscaling / VSR / NNEDI
-            speed_factor *= 0.35
-        elif ai_choice == "2":      # TrueHDR
-            speed_factor *= 0.90
-            
-    return speed_factor
+    hw_factor = hw_multipliers.get(hw_profile.name.lower(), 1.0)
+    
+    # 2. Dämpfungsfaktor durch gewählte AI-Modi / Zusatzfilter (z.B. nnedi, truehdr)
+    ai_penalties = {
+        "none": 1.0,
+        "light": 0.90,
+        "medium": 0.85,
+        "heavy": 0.80,
+        "nnedi_slow": 0.35
+    }
+    
+    ai_factor = ai_penalties.get(ai_choice.lower(), 1.0)
+    
+    # 3. Zusammenführung der Faktoren mit dem gemessenen Test-Speed
+    adjusted_factor = test_speed_factor * hw_factor * ai_factor
+    
+    # Schutz vor unrealistischen oder Null-Werten
+    return max(adjusted_factor, 0.01)
 
 def estimate_total_duration(source_duration_seconds: float, adjusted_speed_factor: float) -> float:
     """

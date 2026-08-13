@@ -7,11 +7,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
-    from .config import PATHS
+    from .paths import PATHS
     from .encoding import build_encoder_args
     from .utils import ensure_dir, logger
 except ImportError:  # pragma: no cover
-    from config import PATHS
+    from paths import PATHS
     from encoding import build_encoder_args
     from utils import ensure_dir, logger
 
@@ -248,14 +248,18 @@ def analyze_noise_and_quality(
     )
 
     # Schwellenwerte analog zur PowerShell-Logik
-    if delta_weighted > 45.0:
+    if delta_weighted > 40.0:
         noise_level = "heavy"
-        denoise_mode = "medium"
+        denoise_mode = "heavy"
         target_vmaf = 93.0
     elif delta_weighted > 30.0:
         noise_level = "medium"
-        denoise_mode = "light"
+        denoise_mode = "medium"
         target_vmaf = 94.5
+    elif delta_weighted > 20.0:
+        noise_level = "light"
+        denoise_mode = "light"
+        target_vmaf = 95.5
     else:
         noise_level = "low"
         denoise_mode = "off"

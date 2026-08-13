@@ -14,8 +14,9 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 try:
-    from .config import PATHS, WORKFLOW_DEFAULTS, recommend_quality_value, resolve_encoder_choice
+    from .config import WORKFLOW_DEFAULTS, recommend_quality_value, resolve_encoder_choice
     from .encoding import build_encoder_args, run_command, run_vmaf_score
+    from .paths import PATHS
     from .media_analysis import (
         analyze_media,
         analyze_noise_and_quality as analyze_preflight,
@@ -23,8 +24,9 @@ try:
     )
     from .utils import ensure_dir, logger, calculate_adjusted_speed_factor, estimate_total_duration
 except ImportError:  # pragma: no cover
-    from config import PATHS, WORKFLOW_DEFAULTS, recommend_quality_value, resolve_encoder_choice
+    from config import WORKFLOW_DEFAULTS, recommend_quality_value, resolve_encoder_choice
     from encoding import build_encoder_args, run_command, run_vmaf_score
+    from paths import PATHS
     from media_analysis import (
         analyze_media,
         analyze_noise_and_quality as analyze_preflight,
@@ -127,7 +129,7 @@ def cleanup_workspace(work_dir: Path, staged_input_path: Optional[Path], raw_inp
             logger.debug(f"Konnte Staging-Datei nicht löschen: {e}")
 
     if work_dir.exists():
-        for pattern in ["temp_delta_*", "*_ref_peak_*", "*_test_q*", "*_encoded.mkv"]:
+        for pattern in ["temp_delta_*", "*_ref_peak_*", "*_test_q*", "*_encoded.mkv", "*_uploaded.mkv"]:
             for tmp_file in work_dir.glob(pattern):
                 try:
                     tmp_file.unlink()
@@ -247,17 +249,35 @@ def calibrate_quality_vmaf(
     print(f"[✓] Kalibrierung abgeschlossen. Optimaler Qualitätswert: Q={best_q}")
     return best_q, last_sample_duration
 
+def run_encoding_job(config: dict):
+    """Der neue Wrapper für das Backend."""
+    # 1. Konfiguration vorbereiten (Mapping vom Pydantic Dict auf lokale Variablen)
+    # Wir emulieren hier die argparse-Struktur, ohne argparse zu nutzen
+    class Args:
+        input_path = config.get("input_path")
+        output_path = None
+        encoder = config.get("encoder") # falls du es vom Frontend mitgibst
+        codec = config.get("codec")
+        quality = 22
+        skip_vmaf = False
+        bitrate_mode = "cbr"
+        bitrate = 5000
+        audio_mode = "copy"
+        subtitle_burn = config.get("subtitle_burn")
+        ai_choice = config.get("ai_choice")
+        use_nnedi = False
+        denoise = config.get("denoise") # "off", "light", etc.
+        ffprobe = None
+        ffmpeg = None
 
-def main() -> int:
+    args = Args()
     start_time = time.time()
-    parser = build_parser()
-    args = parser.parse_args()
-
+     
     results_dir = PATHS.get("results", SCRIPT_DIR / "Results")
     work_dir = results_dir / "Work"
     ensure_dir(results_dir)
     ensure_dir(work_dir)
-
+    
     # Logging zentral & global konfigurieren (striktes Unterdrücken von INFO/DEBUG in der Konsole)
     timestamp_str = time.strftime("%Y%m%d_%H%M%S")
     log_file_path = results_dir / f"encode_{timestamp_str}.log"
@@ -297,11 +317,6 @@ def main() -> int:
     raw_input_path: Optional[Path] = None
 
     try:
-        raw_input_path = Path(args.input_path).expanduser().resolve()
-        if not raw_input_path.exists():
-            print(f"[X] FEHLER: Eingabedatei nicht gefunden: {raw_input_path}")
-            return 1
-
         # ------------------------------------------------------------------
         # SCHRITT 1: Hardware-Check & Auswahl (mit Plattform-Erkennung)
         # ------------------------------------------------------------------
@@ -312,36 +327,59 @@ def main() -> int:
         else:
             print(f"[✓] Hardware-Check: {os_name} / CPU-Modus erzwungen / Fallback (FFmpeg)")
 
-        # ------------------------------------------------------------------
-        # SCHRITT 2: Dateianzeige / Start der Verarbeitung
-        # ------------------------------------------------------------------
-        print(f"[>] Verarbeite Film: {raw_input_path.name} ...")
-
-        # ------------------------------------------------------------------
-        # SCHRITT 3: Dateigröße & Speicherplatz-Prüfung im Zielverzeichnis
-        # ------------------------------------------------------------------
-        file_size_bytes = raw_input_path.stat().st_size
-        file_size_gb = file_size_bytes / (1024**3)
-        
-        target_disk = work_dir.anchor
-        disk_usage = shutil.disk_usage(target_disk)
-        free_space_gb = disk_usage.free / (1024**3)
-        required_space_gb = file_size_gb * WORKFLOW_DEFAULTS.get("disk_space_multiplier", 1.5)
-
-        if free_space_gb < required_space_gb:
-            print(f"[X] FEHLER: Zu wenig Speicherplatz! Frei: {free_space_gb:.1f} GB, Benötigt: ~{required_space_gb:.1f} GB")
-            return 1
-        print(f"[✓] Speicherplatz-Prüfung: OK (Frei: {free_space_gb:.1f} GB | Quelldatei: {file_size_gb:.2f} GB)")
-
-        # ------------------------------------------------------------------
-        # SCHRITT 4: Staging (Upload in Arbeitsverzeichnis)
-        # ------------------------------------------------------------------
-        staged_input_path = work_dir / raw_input_path.name
-        if raw_input_path != staged_input_path:
-            copy_with_progress(raw_input_path, staged_input_path)
+        if config.get("is_staged"):
+            input_path = Path(args.input_path).resolve()
+            raw_input_path = input_path
+            print(f"[✓] Datei aus Browser-Upload übernommen: {input_path.name}")
         else:
-            print(f"[✓] Datei liegt bereits im Arbeitsverzeichnis.")
-        input_path = staged_input_path
+            raw_input_path = Path(args.input_path).expanduser().resolve()
+            if not raw_input_path.exists():
+                print(f"[X] FEHLER: Eingabedatei nicht gefunden: {raw_input_path}")
+                return 1
+
+            
+            # ------------------------------------------------------------------
+            # SCHRITT 2: Dateianzeige / Start der Verarbeitung
+            # ------------------------------------------------------------------
+            print(f"[>] Verarbeite Film: {raw_input_path.name} ...")
+
+            # ------------------------------------------------------------------
+            # SCHRITT 3: Dateigröße & Speicherplatz-Prüfung im Zielverzeichnis
+            # ------------------------------------------------------------------
+            file_size_bytes = raw_input_path.stat().st_size
+            file_size_gb = file_size_bytes / (1024**3)
+            
+            target_disk = work_dir.anchor
+            disk_usage = shutil.disk_usage(target_disk)
+            free_space_gb = disk_usage.free / (1024**3)
+            required_space_gb = file_size_gb * WORKFLOW_DEFAULTS.get("disk_space_multiplier", 1.5)
+
+            if free_space_gb < required_space_gb:
+                print(f"[X] FEHLER: Zu wenig Speicherplatz! Frei: {free_space_gb:.1f} GB, Benötigt: ~{required_space_gb:.1f} GB")
+                return 1
+            print(f"[✓] Speicherplatz-Prüfung: OK (Frei: {free_space_gb:.1f} GB | Quelldatei: {file_size_gb:.2f} GB)")
+
+            # ------------------------------------------------------------------
+            # SCHRITT 4: Staging (Upload in Arbeitsverzeichnis)
+            # ------------------------------------------------------------------
+            max_stem_length = 100
+            safe_stem = raw_input_path.stem[:max_stem_length]
+
+            # Prüfen, ob die Datei bereits im Work-Verzeichnis liegt (z.B. Web-Upload)
+            if raw_input_path.parent.resolve() == work_dir.resolve():
+                staged_input_path = raw_input_path
+                print(f"[✓] Datei aus Web-Upload im Arbeitsverzeichnis erkannt: {staged_input_path.name}")
+            else:
+                # CLI-Modus: Externe Datei mit sicherem Namen & _uploaded ins Work-Verzeichnis kopieren
+                staged_filename = f"{safe_stem}_uploaded{raw_input_path.suffix}"
+                staged_input_path = work_dir / staged_filename
+                
+                if raw_input_path != staged_input_path:
+                    copy_with_progress(raw_input_path, staged_input_path)
+                else:
+                    print(f"[✓] Datei liegt bereits im Arbeitsverzeichnis.")
+                    
+            input_path = staged_input_path
 
         # ------------------------------------------------------------------
         # SCHRITT 5 & 6: Medien-Analyse & Einheitliche AI-Modus-Bestimmung
@@ -444,8 +482,12 @@ def main() -> int:
         # SCHRITT 8: Haupt-Encode mit ETA & Fortschritt (in Work schreiben)
         # ------------------------------------------------------------------
         # Während des Encodens IMMER im Work-Verzeichnis arbeiten
-        temp_encoded_path = work_dir / f"{raw_input_path.stem}_encoded.mkv"
-        final_output_path = resolve_output_path(raw_input_path, args.output_path)
+        clean_stem = raw_input_path.stem
+        if clean_stem.endswith("_uploaded"):
+            clean_stem = clean_stem[:-9] # Schneidet "_uploaded" (9 Zeichen) ab
+        temp_encoded_path = work_dir / f"{clean_stem}_encoded.mkv"
+        clean_raw_path = raw_input_path.with_name(f"{clean_stem}{raw_input_path.suffix}")
+        final_output_path = resolve_output_path(clean_raw_path, args.output_path)
 
         print(f"[>] Starte Haupt-Encode (im Arbeitsverzeichnis)...")
         command_args = build_encoder_args(
@@ -482,14 +524,26 @@ def main() -> int:
         cleanup_workspace(work_dir, staged_input_path, raw_input_path)
 
         total_duration = time.time() - start_time
-        print("==================================================")
-        print(f"[✓] FERTIG! Encoding erfolgreich abgeschlossen.")
-        print(f"    Zieldatei: {final_output_path}")
-        print(f"    Gesamtlaufzeit: {format_time(total_duration)}")
-        print(f"    Protokoll gespeichert unter: {log_file_path}")
-        print("==================================================\n")
+        formatted_duration = format_time(total_duration)
+        
+        # Einheitliche Abschlussnachricht definieren
+        completion_msg = (
+            "==================================================\n"
+            "[✓] FERTIG! Encoding erfolgreich abgeschlossen.\n"
+            f"    Zieldatei: {final_output_path}\n"
+            f"    Gesamtlaufzeit: {formatted_duration}\n"
+            f"    Protokoll gespeichert unter: {log_file_path}\n"
+            "=================================================="
+        )
+
+        # 1. Ins Terminal schreiben
+        print(completion_msg + "\n")
+        
+        # 2. In die Log-Datei schreiben (damit es für die Analyse erhalten bleibt)
+        logging.info(completion_msg)
         return 0
 
+    
     except KeyboardInterrupt:
         print("\n\n[!] ABBRUCH: Durch Benutzer unterbrochen (Strg+C).")
         logger.warning("Pipeline durch Benutzer via Strg+C abgebrochen.")
@@ -505,6 +559,20 @@ def main() -> int:
         print(f"[✓] Arbeitsverzeichnis erfolgreich bereinigt.")
         print(f"[✓] Protokoll wurde gesichert unter: {log_file_path}")
         return 1
+
+    finally:
+        # WICHTIG: Schließt den Dateizugriff, damit die Log-Datei freigegeben wird!
+        file_handler.close()
+        root_logger.removeHandler(file_handler)
+        if console_handler in root_logger.handlers:
+            root_logger.removeHandler(console_handler)
+    
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+
+    return run_encoding_job(vars(args))
+
 
 if __name__ == "__main__":
     sys.exit(main())

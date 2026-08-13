@@ -8,10 +8,10 @@ from pathlib import Path
 from typing import Optional, Sequence, Any, Dict, List
 
 try:
-    from .config import PATHS
+    from .paths import PATHS
     from .utils import HWProfile, detect_hardware, logger
 except ImportError:  # pragma: no cover
-    from config import PATHS
+    from paths import PATHS
     from utils import HWProfile, detect_hardware, logger
 
 logger = logging.getLogger(__name__)
@@ -89,19 +89,21 @@ def map_denoise_to_filter(denoise_mode: str, encoder: str = "nvencc") -> Optiona
     """Gibt die passenden Denoise-Argumente für den jeweiligen Encoder zurück.
     Bei 'light' oder 'off' wird None zurückgegeben (kein Filter-Overlay).
     """
-    if not denoise_mode or denoise_mode.lower() in {"off", "none", "light"}:
+    if not denoise_mode or denoise_mode.lower() in {"off", "none"}:
         return None
 
     mode = denoise_mode.lower()
 
     if encoder == "nvencc":
         pmd_modes = {
+            "light": ["--vpp-pmd", "apply_count=1,strength=10,threshold=25"],
             "medium": ["--vpp-pmd", "apply_count=1,strength=20,threshold=35"],
             "heavy": ["--vpp-pmd", "apply_count=2,strength=30,threshold=50"],
         }
         return pmd_modes.get(mode)
     else:
         ffmpeg_modes = {
+            "light": ["-vf", "hqdn3d=2:2:4:4"],
             "medium": ["-vf", "hqdn3d=3:3:6:6"],
             "heavy": ["-vf", "hqdn3d=4:4:8:8"],
         }
@@ -266,10 +268,13 @@ def run_vmaf_score(
     ffmpeg_bin: Path = Path("ffmpeg")
 ) -> float:
     """Führt den libvmaf-Vergleich durch, resetted Timestamps und erzwingt 10-Bit YUV."""
-    vmaf_json = Path("vmaf_temp.json")
+    work_dir = Path(encoded_sample_path).parent
+    vmaf_json = work_dir / "vmaf_temp.json"
+
     if vmaf_json.exists():
         vmaf_json.unlink(missing_ok=True)
 
+    # 2. Filter-String mit f-string und sauberem Relativpfad für den Work-Ordner
     vmaf_filter = (
         "[0:v]setpts=PTS-STARTPTS,format=yuv420p10le[ref];"
         "[1:v]setpts=PTS-STARTPTS,format=yuv420p10le[dist];"
@@ -286,7 +291,7 @@ def run_vmaf_score(
     ]
 
     try:
-        subprocess.run(cmd, capture_output=True, text=True, check=True)
+        subprocess.run(cmd, cwd=str(work_dir), capture_output=True, text=True, check=True)
         if vmaf_json.exists():
             data = json.loads(vmaf_json.read_text(encoding="utf-8"))
             vmaf_json.unlink(missing_ok=True)
