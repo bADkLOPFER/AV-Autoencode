@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Encoding</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-900 text-white p-4">
+    <div class="max-w-md mx-auto bg-gray-800 rounded-lg shadow-md p-6 space-y-4">
+        <h1 class="text-2xl font-bold">Video Encoding</h1>
+        <form id="encodeForm">
+            <div class="mb-4">
+                <label for="input_path" class="block text-sm font-medium mb-2">Input Path:</label>
+                <input type="text" id="input_path" name="input_path" class="w-full px-3 py-2 bg-gray-700 text-white border border-gray-600 rounded focus:outline-none focus:border-blue-500">
+            </div>
+            <div class="mb-4">
+                <label for="codec" class="block text-sm font-medium mb-2">Codec:</label>
+                <select id="codec" name="codec" class="w-full px-3 py-2 bg-gray-700 text-white border border-gray-600 rounded focus:outline-none focus:border-blue-500">
+                    <option value="h264">H.264</option>
+                    <option value="hevc">HEVC</option>
+                </select>
+            </div>
+            <div class="mb-4">
+                <label for="ai_choice" class="block text-sm font-medium mb-2">AI Mode:</label>
+                <select id="ai_choice" name="ai_choice" class="w-full px-3 py-2 bg-gray-700 text-white border border-gray-600 rounded focus:outline-none focus:border-blue-500">
+                    <option value="fast">Fast</option>
+                    <option value="quality">Quality</option>
+                </select>
+            </div>
+            <div class="mb-4">
+                <label for="denoise" class="block text-sm font-medium mb-2">Denoise:</label>
+                <input type="checkbox" id="denoise" name="denoise" value="true" class="mr-2">
+            </div>
+            <div class="mb-4">
+                <label for="subtitle_burn" class="block text-sm font-medium mb-2">Subtitle Burn:</label>
+                <input type="checkbox" id="subtitle_burn" name="subtitle_burn" value="true" class="mr-2">
+            </div>
+            <button type="submit" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded">Start Encoding</button>
+        </form>
+    </div>
+
+    <script>
+        document.getElementById('encodeForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const formData = new FormData(this);
+            const response = await fetch('/start-encode', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    input_path: formData.get('input_path'),
+                    codec: formData.get('codec'),
+                    ai_choice: formData.get('ai_choice'),
+                    denoise: formData.get('denoise') === 'true',
+                    subtitle_burn: formData.get('subtitle_burn') === 'true'
+                })
+            });
+            const result = await response.json();
+            alert(result.message);
+        });
+    </script>
+</body>
+</html>

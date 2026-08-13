@@ -441,14 +441,16 @@ def main() -> int:
             print(f"[✓] Geschätzte Encoding-Dauer: (Nicht verfügbar)")
 
         # ------------------------------------------------------------------
-        # SCHRITT 8: Haupt-Encode mit ETA & Fortschritt
+        # SCHRITT 8: Haupt-Encode mit ETA & Fortschritt (in Work schreiben)
         # ------------------------------------------------------------------
+        # Während des Encodens IMMER im Work-Verzeichnis arbeiten
+        temp_encoded_path = work_dir / f"{raw_input_path.stem}_encoded.mkv"
         final_output_path = resolve_output_path(raw_input_path, args.output_path)
-        
-        print(f"[>] Starte Haupt-Encode...")
+
+        print(f"[>] Starte Haupt-Encode (im Arbeitsverzeichnis)...")
         command_args = build_encoder_args(
             input_path=input_path,
-            output_path=final_output_path,
+            output_path=temp_encoded_path,
             encoder=selected_encoder,
             codec=selected_codec,
             quality_value=final_quality,
@@ -465,6 +467,14 @@ def main() -> int:
 
         logger.debug("Haupt-Encode Befehl: %s", " ".join(command_args))
         run_command(command_args)
+
+        # Nach erfolgreichem Encode die fertige Datei eine Ebene höher in den Zielordner schieben
+        if temp_encoded_path.exists():
+            if temp_encoded_path != final_output_path:
+                print(f"[>] Verschiebe fertige Zieldatei nach Results...")
+                if final_output_path.exists():
+                    final_output_path.unlink()
+                shutil.move(str(temp_encoded_path), str(final_output_path))
 
         # ------------------------------------------------------------------
         # SCHRITT 9: Bereinigung & Abschluss

@@ -55,6 +55,7 @@ else:
 DEFAULT_ENCODER = "nvencc" if IS_WINDOWS else "ffmpeg"
 ENCODER_CHOICES = ("ffmpeg", "nvencc")
 
+DEFAULT_WEB_PORT = 8265
 
 def resolve_encoder_choice(requested: Optional[str]) -> str:
     if requested is None:
