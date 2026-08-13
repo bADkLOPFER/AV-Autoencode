@@ -199,3 +199,9 @@ CONFIG = {
     "paths": PATHS,
     "debug_args": True,
 }
+WORKFLOW_DEFAULTS = {
+    "hw_accel_mode": "auto",          # "auto", "nvencc", oder "cpu"
+    "default_codec": "av1",           # "av1" oder "hevc"
+    "default_true_hdr": True,         # TrueHDR standardmäßig aktivieren
+    "disk_space_multiplier": 1.5,     # Sicherheitsfaktor für freien Speicherplatz
+}

@@ -147,3 +147,27 @@ def ensure_dir(path: Union[str, Path]) -> Path:
     path_obj = Path(path)
     path_obj.mkdir(parents=True, exist_ok=True)
     return path_obj
+
+def calculate_adjusted_speed_factor(test_speed_factor: float, ai_choice: str) -> float:
+    """
+    Passt den im 3-minütigen Testlauf ermittelten SpeedFactor 
+    basierend auf der gewählten Filterkette an.
+    """
+    speed_factor = float(test_speed_factor)
+    
+    if speed_factor > 0:
+        if ai_choice in ("3", "4"):  # Intensives Upscaling / VSR / NNEDI
+            speed_factor *= 0.35
+        elif ai_choice == "2":      # TrueHDR
+            speed_factor *= 0.90
+            
+    return speed_factor
+
+def estimate_total_duration(source_duration_seconds: float, adjusted_speed_factor: float) -> float:
+    """
+    Berechnet die geschätzte Gesamtdauer des Encodiervorgangs in Minuten.
+    """
+    if adjusted_speed_factor <= 0:
+        return 0.0
+    
+    return source_duration_seconds / adjusted_speed_factor
