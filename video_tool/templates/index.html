@@ -26,7 +26,15 @@
                         <p id="dropText" class="text-sm text-gray-400">Datei hierher ziehen oder <span class="text-blue-400 underline">durchsuchen</span></p>
                     </div>
                 </div>
-
+                <div id="progressContainer" class="hidden space-y-1">
+                    <div class="flex justify-between text-xs text-gray-400">
+                        <span>Upload-Fortschritt</span>
+                        <span id="progressText">0%</span>
+                    </div>
+                    <div class="w-full bg-gray-900 rounded-full h-2.5 overflow-hidden border border-gray-700">
+                        <div id="progressBar" class="bg-blue-600 h-2.5 rounded-full transition-all duration-150" style="width: 0%"></div>
+                    </div>
+                </div>
                 <!-- Codec & HDR (Grid) -->
                 <div class="grid grid-cols-2 gap-4">
                     <div>
@@ -79,6 +87,9 @@
         const statusText = document.getElementById('statusText');
         const startBtn = document.getElementById('startBtn');
         const cancelBtn = document.getElementById('cancelBtn');
+        const progressContainer = document.getElementById('progressContainer');
+        const progressBar = document.getElementById('progressBar');
+        const progressText = document.getElementById('progressText');
 
         let selectedFile = null;
         
@@ -166,6 +177,9 @@
             startBtn.disabled = true;
             startBtn.textContent = 'Encoding läuft...';
             cancelBtn.classList.remove('hidden'); // Button einblenden
+            progressContainer.classList.remove('hidden');
+            progressBar.style.width = '0%';
+            progressText.textContent = '0%';
 
             // Payload ohne die entfernten Checkboxen
             const formData = new FormData();
@@ -173,42 +187,66 @@
             formData.append('codec', document.querySelector('input[name="codec"]:checked').value);
             formData.append('hdr_mode', document.querySelector('input[name="hdr_mode"]:checked').value);
 
-            statusText.textContent = "Wird gestartet...";
+            statusText.textContent = "Upload läuft...";
             statusText.className = "text-yellow-400";
             logBox.innerHTML += `<div class="text-blue-300">[Client] Sende Job an Server: ${selectedFile.name} (Codec: ${document.querySelector('input[name="codec"]:checked').value.toUpperCase()}, HDR: ${document.querySelector('input[name="hdr_mode"]:checked').value})</div>`;
             logBox.scrollTop = logBox.scrollHeight;
 
-            try {
-                const response = await fetch('/start-encode', {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                const result = await response.json();
-                
-                if (response.ok) {
-                    statusText.textContent = "Aktiv";
-                    statusText.className = "text-green-400";
-                    logBox.innerHTML += `<div class="text-green-300">[Server] ${result.message || 'Encoding erfolgreich gestartet.'}</div>`;
-                } else {
+            // XMLHttpRequest für echten Upload-Fortschritt nutzen
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/start-encode', true);
+
+            // Fortschritt abfangen
+            xhr.upload.addEventListener('progress', (event) => {
+                if (event.lengthComputable) {
+                    const percentComplete = Math.round((event.loaded / event.total) * 100);
+                    progressBar.style.width = percentComplete + '%';
+                    progressText.textContent = percentComplete + '%';
+                    
+                    if (percentComplete === 100) {
+                        startBtn.textContent = 'Encoding läuft...';
+                        statusText.textContent = "Verarbeite...";
+                    }
+                }
+            });
+
+            xhr.onload = () => {
+                try {
+                    const result = JSON.parse(xhr.responseText);
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        statusText.textContent = "Aktiv";
+                        statusText.className = "text-green-400";
+                        logBox.innerHTML += `<div class="text-green-300">[Server] ${result.message || 'Encoding erfolgreich gestartet.'}</div>`;
+                    } else {
+                        throw new Error(result.detail ? JSON.stringify(result.detail) : "Serverfehler");
+                    }
+                } catch (err) {
                     statusText.textContent = "Fehler";
                     statusText.className = "text-red-400";
-                    
-                    // FastAPI 422 Details lesbar machen
-                    let errorText = result.detail;
-                    if (typeof errorText === 'object') {
-                        errorText = JSON.stringify(errorText);
-                    }
-                    logBox.innerHTML += `<div class="text-red-400">[Server-Error] ${errorText}</div>`;
+                    logBox.innerHTML += `<div class="text-red-400">[Server-Error] ${err.message}</div>`;
+                    resetUI();
                 }
-            } catch (err) {
+                logBox.scrollTop = logBox.scrollHeight;
+            };
+
+            xhr.onerror = () => {
                 statusText.textContent = "Verbindungsfehler";
                 statusText.className = "text-red-400";
                 logBox.innerHTML += `<div class="text-red-400">[Error] Keine Verbindung zum Backend möglich.</div>`;
-            }
-            
-            logBox.scrollTop = logBox.scrollHeight;
+                resetUI();
+                logBox.scrollTop = logBox.scrollHeight;
+            };
+
+            xhr.send(formData);
         });
+
+        // Hilfsfunktion zum Zurücksetzen der UI bei Fehlern
+        function resetUI() {
+            startBtn.disabled = false;
+            startBtn.textContent = 'Encoding starten';
+            cancelBtn.classList.add('hidden');
+            progressContainer.classList.add('hidden');
+        }
     </script>
 </body>
 </html>
