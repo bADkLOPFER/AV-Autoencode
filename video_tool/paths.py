@@ -39,6 +39,7 @@ elif IS_MACOS:
 else:
     PATHS = {
         "ffmpeg": Path("/usr/bin/ffmpeg"),
+        "ffmpeg_vmaf": Path("/usr/local/bin/ffmpeg"),
         "ffprobe": Path("/usr/bin/ffprobe"),
         "nvencc": Path("/usr/local/bin/nvencc"),
         "results": SCRIPT_DIR / "Results",

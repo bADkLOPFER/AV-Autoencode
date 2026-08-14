@@ -155,6 +155,8 @@ def calibrate_quality_vmaf(
     ensure_dir(work_dir)
 
     ffmpeg_bin = PATHS.get("ffmpeg", Path("ffmpeg"))
+    ffmpeg_vmaf_bin = PATHS.get("ffmpeg_vmaf", Path("ffmpeg_vmaf"))
+
     ref_sample = work_dir / f"{input_path.stem}_ref_peak_10s.mkv"
 
     cut_cmd = [
@@ -221,7 +223,7 @@ def calibrate_quality_vmaf(
             encoded_sample_path=test_encoded,
             sample_start=0,
             sample_duration=10,
-            ffmpeg_bin=Path(ffmpeg_bin),
+            ffmpeg_bin=Path(ffmpeg_vmaf_bin),
         )
 
         if vmaf_score <= 0.0:

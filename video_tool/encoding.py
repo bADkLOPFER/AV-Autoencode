@@ -259,7 +259,7 @@ def run_vmaf_score(
     encoded_sample_path: Path,
     sample_start: int = 0,
     sample_duration: int = 10,
-    ffmpeg_bin: Path = Path("ffmpeg")
+    ffmpeg_bin: Path = Path("ffmpeg_vmaf")
 ) -> float:
     """Führt den libvmaf-Vergleich durch, resetted Timestamps und erzwingt 10-Bit YUV."""
     work_dir = Path(encoded_sample_path).parent
