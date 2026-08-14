@@ -176,8 +176,9 @@ async def start_encode(
 
     return {"status": "success", "message": "Encoding Prozess gestartet."}
 
-def cleanup_work_dir():
+async def cleanup_work_dir():
     """Löscht alle temporären Dateien und Ordner im Work-Verzeichnis."""
+    await asyncio.sleep(0.3)
     try:
         if WORK_DIR.exists():
             for item in WORK_DIR.iterdir():
@@ -188,7 +189,7 @@ def cleanup_work_dir():
             print("[OK] Arbeitsverzeichnis (Work-Dir) durch Server bereinigt.")
     except Exception as e:
         print(f"Fehler beim Bereinigen des Arbeitsverzeichnisses: {e}")
-        
+
 @app.post("/cancel-encode")
 async def cancel_encode():
     global ACTIVE_PROCESS, CANCEL_REQUESTED
@@ -211,10 +212,12 @@ async def cancel_encode():
                     pass
                     
             ACTIVE_PROCESS = None
+            await cleanup_work_dir()
             await manager.broadcast("[JOB_CANCELLED]")
             return {"status": "success", "message": "Encoding-Prozess komplett abgebrochen."}
-    cleanup_work_dir()    
+    
     # Falls kein Prozess aktiv war (z.B. während Upload)
+    await cleanup_work_dir()
     await manager.broadcast("[JOB_CANCELLED]")
     return {"status": "success", "message": "Vorbereitung / Upload abgebrochen."}
 

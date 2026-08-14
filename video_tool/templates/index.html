@@ -227,6 +227,7 @@
             startBtn.disabled = true;
             startBtn.textContent = 'Encoding läuft...';
             cancelBtn.classList.remove('hidden'); // Button einblenden
+            cancelBtn.disabled = false;
             progressContainer.classList.remove('hidden');
             progressBar.style.width = '0%';
             progressText.textContent = '0%';
