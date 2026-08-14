@@ -236,7 +236,7 @@ def calibrate_quality_vmaf(
             best_q = current_q
 
         if lower_bound <= vmaf_score <= upper_bound:
-            print(f"[✓] VMAF-Zielwert im Toleranzbereich getroffen bei Q={current_q}!")
+            print(f"[OK] VMAF-Zielwert im Toleranzbereich getroffen bei Q={current_q}!")
             return current_q, last_sample_duration
 
         if vmaf_score > upper_bound:
@@ -246,7 +246,7 @@ def calibrate_quality_vmaf(
 
         current_q = max(14, min(current_q, 36))
 
-    print(f"[✓] Kalibrierung abgeschlossen. Optimaler Qualitätswert: Q={best_q}")
+    print(f"[OK] Kalibrierung abgeschlossen. Optimaler Qualitätswert: Q={best_q}")
     return best_q, last_sample_duration
 
 def run_encoding_job(config: dict):
@@ -323,14 +323,14 @@ def run_encoding_job(config: dict):
         os_name = platform.system()
         selected_encoder = resolve_encoder_choice(args.encoder)
         if selected_encoder == "nvencc":
-            print(f"[✓] Hardware-Check: {os_name} / NVIDIA NVEncC aktiv (GPU Beschleunigung)")
+            print(f"[OK] Hardware-Check: {os_name} / NVIDIA NVEncC aktiv (GPU Beschleunigung)")
         else:
-            print(f"[✓] Hardware-Check: {os_name} / CPU-Modus erzwungen / Fallback (FFmpeg)")
+            print(f"[OK] Hardware-Check: {os_name} / CPU-Modus erzwungen / Fallback (FFmpeg)")
 
         if config.get("is_staged"):
             input_path = Path(args.input_path).resolve()
             raw_input_path = input_path
-            print(f"[✓] Datei aus Browser-Upload übernommen: {input_path.name}")
+            print(f"[OK] Datei aus Browser-Upload übernommen: {input_path.name}")
         else:
             raw_input_path = Path(args.input_path).expanduser().resolve()
             if not raw_input_path.exists():
@@ -357,7 +357,7 @@ def run_encoding_job(config: dict):
             if free_space_gb < required_space_gb:
                 print(f"[X] FEHLER: Zu wenig Speicherplatz! Frei: {free_space_gb:.1f} GB, Benötigt: ~{required_space_gb:.1f} GB")
                 return 1
-            print(f"[✓] Speicherplatz-Prüfung: OK (Frei: {free_space_gb:.1f} GB | Quelldatei: {file_size_gb:.2f} GB)")
+            print(f"[OK] Speicherplatz-Prüfung: OK (Frei: {free_space_gb:.1f} GB | Quelldatei: {file_size_gb:.2f} GB)")
 
             # ------------------------------------------------------------------
             # SCHRITT 4: Staging (Upload in Arbeitsverzeichnis)
@@ -368,7 +368,7 @@ def run_encoding_job(config: dict):
             # Prüfen, ob die Datei bereits im Work-Verzeichnis liegt (z.B. Web-Upload)
             if raw_input_path.parent.resolve() == work_dir.resolve():
                 staged_input_path = raw_input_path
-                print(f"[✓] Datei aus Web-Upload im Arbeitsverzeichnis erkannt: {staged_input_path.name}")
+                print(f"[OK] Datei aus Web-Upload im Arbeitsverzeichnis erkannt: {staged_input_path.name}")
             else:
                 # CLI-Modus: Externe Datei mit sicherem Namen & _uploaded ins Work-Verzeichnis kopieren
                 staged_filename = f"{safe_stem}_uploaded{raw_input_path.suffix}"
@@ -377,7 +377,7 @@ def run_encoding_job(config: dict):
                 if raw_input_path != staged_input_path:
                     copy_with_progress(raw_input_path, staged_input_path)
                 else:
-                    print(f"[✓] Datei liegt bereits im Arbeitsverzeichnis.")
+                    print(f"[OK] Datei liegt bereits im Arbeitsverzeichnis.")
                     
             input_path = staged_input_path
 
@@ -401,7 +401,7 @@ def run_encoding_job(config: dict):
         if is_interlaced:
             print(f"[!] Interlaced-Material erkannt (Field Order: {field_order}) -> NNEDI/Deinterlacing-Filter erforderlich.")
         else:
-            print(f"[✓] Scan-Typ: Progressive (Kein klassisches Deinterlacing nötig)")
+            print(f"[OK] Scan-Typ: Progressive (Kein klassisches Deinterlacing nötig)")
 
         # Codec-Auswahl
         selected_codec = args.codec.lower() if args.codec else WORKFLOW_DEFAULTS.get("default_codec", "av1")
@@ -422,11 +422,11 @@ def run_encoding_job(config: dict):
                 ai_choice = "4"
             print(f"[!] SD-Auflösung erkannt ({source_height}p) -> AI-Modus automatisch auf {ai_choice} angepasst (inkl. DVD2HD Upscaling)")
         elif source_height >= 1080:
-            print(f"[✓] Auflösungs-Check: High-Definition erkannt ({source_height}p) -> AI-Modus {ai_choice}")
+            print(f"[OK] Auflösungs-Check: High-Definition erkannt ({source_height}p) -> AI-Modus {ai_choice}")
         else:
-            print(f"[✓] Auflösungs-Check: Auflösung bei {source_height}p -> AI-Modus {ai_choice}")
+            print(f"[OK] Auflösungs-Check: Auflösung bei {source_height}p -> AI-Modus {ai_choice}")
 
-        print(f"[✓] Konfiguration: Codec = {selected_codec.upper()} | AI-Modus = {ai_choice}")
+        print(f"[OK] Konfiguration: Codec = {selected_codec.upper()} | AI-Modus = {ai_choice}")
 
         bitrate_info = media_info.get("bitrate_info", {})
         print(f"    -> Schnitt = {bitrate_info.get('avg_kbps', 0)} kbps | Peak = {bitrate_info.get('peak_kbps', 0)} kbps")
@@ -467,16 +467,16 @@ def run_encoding_job(config: dict):
             )
         else:
             final_quality = initial_quality
-            print(f"[✓] VMAF-Kalibrierung übersprungen. Verwende Q={final_quality}")
+            print(f"[OK] VMAF-Kalibrierung übersprungen. Verwende Q={final_quality}")
 
-        print(f"[✓] Finaler Qualitätswert festgelegt: Q={final_quality}")
+        print(f"[OK] Finaler Qualitätswert festgelegt: Q={final_quality}")
 
         if sample_duration > 0 and video_duration > 0:
             adjusted_factor = calculate_adjusted_speed_factor(10/sample_duration, ai_choice)
             estimated_total_seconds = estimate_total_duration(video_duration, adjusted_factor)
-            print(f"[✓] Geschätzte Encoding-Dauer: ca. {format_time(estimated_total_seconds)}")
+            print(f"[OK] Geschätzte Encoding-Dauer: ca. {format_time(estimated_total_seconds)}")
         else:
-            print(f"[✓] Geschätzte Encoding-Dauer: (Nicht verfügbar)")
+            print(f"[OK] Geschätzte Encoding-Dauer: (Nicht verfügbar)")
 
         # ------------------------------------------------------------------
         # SCHRITT 8: Haupt-Encode mit ETA & Fortschritt (in Work schreiben)
@@ -529,7 +529,7 @@ def run_encoding_job(config: dict):
         # Einheitliche Abschlussnachricht definieren
         completion_msg = (
             "==================================================\n"
-            "[✓] FERTIG! Encoding erfolgreich abgeschlossen.\n"
+            "[OK] FERTIG! Encoding erfolgreich abgeschlossen.\n"
             f"    Zieldatei: {final_output_path}\n"
             f"    Gesamtlaufzeit: {formatted_duration}\n"
             f"    Protokoll gespeichert unter: {log_file_path}\n"
@@ -541,7 +541,7 @@ def run_encoding_job(config: dict):
         
         # 2. In die Log-Datei schreiben (damit es für die Analyse erhalten bleibt)
         logging.info(completion_msg)
-        print("[JOB_FINISHED]")
+        print("[UI_RESET]")
         return 0
 
     
@@ -549,16 +549,16 @@ def run_encoding_job(config: dict):
         print("\n\n[!] ABBRUCH: Durch Benutzer unterbrochen (Strg+C).")
         logger.warning("Pipeline durch Benutzer via Strg+C abgebrochen.")
         cleanup_workspace(work_dir, staged_input_path, raw_input_path)
-        print(f"[✓] Arbeitsverzeichnis erfolgreich bereinigt.")
-        print(f"[✓] Protokoll wurde gesichert unter: {log_file_path}")
+        print(f"[OK] Arbeitsverzeichnis erfolgreich bereinigt.")
+        print(f"[OK] Protokoll wurde gesichert unter: {log_file_path}")
         return 1
 
     except Exception as exc:
         logger.exception("Fehler während der Ausführung: %s", exc)
         print(f"\n[X] KRITISCHER FEHLER: {exc}")
         cleanup_workspace(work_dir, staged_input_path, raw_input_path)
-        print(f"[✓] Arbeitsverzeichnis erfolgreich bereinigt.")
-        print(f"[✓] Protokoll wurde gesichert unter: {log_file_path}")
+        print(f"[OK] Arbeitsverzeichnis erfolgreich bereinigt.")
+        print(f"[OK] Protokoll wurde gesichert unter: {log_file_path}")
         return 1
 
     finally:

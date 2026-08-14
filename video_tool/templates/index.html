@@ -92,56 +92,95 @@
         const progressText = document.getElementById('progressText');
 
         let selectedFile = null;
+        let currentXhr = null;
         
         const ws = new WebSocket(`ws://${window.location.host}/ws/logs`);
 
-        // Abbruch-Logik
+        // Abbruch-Logik (Client-seitig angestoßen)
         cancelBtn.addEventListener('click', async () => {
             if(confirm("Encoding wirklich abbrechen?")) {
-                const response = await fetch('/cancel-encode', { method: 'POST' });
-                const result = await response.json();
-                logBox.innerHTML += `<div class="text-red-500 font-bold">[Client] ${result.message}</div>`;
+                
+                // NEU: Sofort den laufenden Upload-Request im Browser abwürgen!
+                if (currentXhr) {
+                    currentXhr.abort();
+                    currentXhr = null;
+                }
+
+                // Server informieren
+                try {
+                    const response = await fetch('/cancel-encode', { method: 'POST' });
+                    const result = await response.json();
+                    logBox.innerHTML += `<div class="text-red-500 font-bold">[Client] ${result.message}</div>`;
+                } catch (e) {
+                    // Falls Server nicht erreichbar
+                }
                 
                 // UI zurücksetzen
                 startBtn.disabled = false;
                 startBtn.textContent = 'Encoding starten';
                 cancelBtn.classList.add('hidden');
+                cancelBtn.disabled = true;
+                progressContainer.classList.add('hidden');
+                progressBar.style.width = '0%';
+                progressText.textContent = '0%';
+                statusText.textContent = "Abgebrochen";
+                statusText.className = "text-yellow-400";
             }
         });
 
+        // Die zentrale Reset-Funktion (Wird NUR beim Erfolg aufgerufen)
+        function resetUI() {
+            startBtn.disabled = false;
+            startBtn.textContent = 'Encoding starten';
+            cancelBtn.classList.add('hidden');
+            cancelBtn.disabled = true;
+            
+            // Fortschrittsanzeige verstecken & resetten
+            progressContainer.classList.add('hidden');
+            progressBar.style.width = '0%';
+            progressText.textContent = '0%';
+            
+            // Korrekte IDs passend zum HTML
+            fileInput.value = "";
+            inputPath.value = "";
+            dropText.innerHTML = 'Datei hierher ziehen oder <span class="text-blue-400 underline">durchsuchen</span>';
+            selectedFile = null;
+            
+            statusText.textContent = "Bereit";
+            statusText.className = "text-yellow-400";
+        }
+
         ws.onmessage = (event) => {
             const msg = event.data;
+            console.log("Nachricht vom Server:", JSON.stringify(msg));
+
+            // 1. Wenn das explizite [UI_RESET]-Signal vom Server kommt (Erfolgsfall)
+            if (msg.trim() === "[UI_RESET]") {
+                console.log("SIGNAL ERKANNT: Starte resetUI()");
+                statusText.textContent = "Bereit";
+                statusText.className = "text-green-400";
+                resetUI();
+                return; // Abbrechen, damit es nicht im Log landet
+            }
+
             logBox.innerHTML += `<div class="text-gray-300 font-mono text-xs">${msg}</div>`;
             logBox.scrollTop = logBox.scrollHeight;
 
-            // Automatische Status-Erkennung anhand der Log-Meldungen
-            if (msg.includes("FERTIG!") || msg.includes("erfolgreich abgeschlossen")) {
-                statusText.textContent = "Bereit";
-                statusText.className = "text-green-400";
-                startBtn.disabled = false;
-                startBtn.textContent = 'Encoding starten';
-                cancelBtn.classList.add('hidden');
-                resetUI();
-            } else if (msg.includes("KRITISCHER FEHLER") || msg.includes("ABBRUCH")) {
-                statusText.textContent = "Fehler";
+            // 2. Fehler- oder Server-seitige Abbruch-Erkennung
+            // WICHTIG: Hier rufen wir absichtlich NICHT resetUI() auf!
+            if (msg.includes("KRITISCHER FEHLER") || msg.includes("[JOB_CANCELLED]")) {
+                statusText.textContent = "Fehler / Abgebrochen";
                 statusText.className = "text-red-400";
                 startBtn.disabled = false;
                 startBtn.textContent = 'Encoding starten';
                 cancelBtn.classList.add('hidden');
-                resetUI();
+                cancelBtn.disabled = true;
+                // Inputs (wie Datei und Codec) bleiben für den Nutzer sichtbar!
             }
-
         };
 
-        function resetUI() {
-            document.getElementById('start-btn').disabled = false;
-            document.getElementById('cancel-btn').disabled = true;
-            document.getElementById('progress-bar').style.width = '0%';
-            // Eventuelle File-Inputs löschen:
-            document.getElementById('file-upload').value = "";
-            document.getElementById('status-display').innerText = "Bereit für neuen Auftrag.";
-        }
-        
+
+
         // --- FILE HANDLING ---
         dropZone.addEventListener('click', () => fileInput.click());
         fileInput.addEventListener('change', (e) => handleFile(e.target.files[0]));
@@ -205,6 +244,7 @@
 
             // XMLHttpRequest für echten Upload-Fortschritt nutzen
             const xhr = new XMLHttpRequest();
+            currentXhr = xhr; // Referenz speichern, um ggf. abzubrechen
             xhr.open('POST', '/start-encode', true);
 
             // Fortschritt abfangen
@@ -222,6 +262,7 @@
             });
 
             xhr.onload = () => {
+                currentXhr = null; // Upload abgeschlossen, Referenz löschen
                 try {
                     const result = JSON.parse(xhr.responseText);
                     if (xhr.status >= 200 && xhr.status < 300) {
@@ -241,6 +282,7 @@
             };
 
             xhr.onerror = () => {
+                currentXhr = null; // Upload fehlgeschlagen, Referenz löschen
                 statusText.textContent = "Verbindungsfehler";
                 statusText.className = "text-red-400";
                 logBox.innerHTML += `<div class="text-red-400">[Error] Keine Verbindung zum Backend möglich.</div>`;
@@ -251,13 +293,6 @@
             xhr.send(formData);
         });
 
-        // Hilfsfunktion zum Zurücksetzen der UI bei Fehlern
-        function resetUI() {
-            startBtn.disabled = false;
-            startBtn.textContent = 'Encoding starten';
-            cancelBtn.classList.add('hidden');
-            progressContainer.classList.add('hidden');
-        }
     </script>
 </body>
 </html>
