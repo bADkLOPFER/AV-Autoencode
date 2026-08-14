@@ -38,17 +38,19 @@ Das Projekt erwartet seine Abhängigkeiten in einer strukturierten Umgebung:
 │   └── 📄 nvencc64.exe          <-- Benötigt für NVIDIA GPU-Encoding & KI-Filter
 ├── 📁 _Work/                    <-- Temporäres Arbeitsverzeichnis (wird bereinigt)
 └── 📁 Results/                  <-- Zielordner für finale Videos & Summaries
+```
 
+---
 
 ## 🚀 Nutzung
 
-Option A: Über die Weboberfläche (Empfohlen)
+**Option A:** Über die Weboberfläche (Empfohlen)
 
 1. Starte den FastAPI-Server über das Terminal (im Projektverzeichnis):
-
+```
 Bash
 uvicorn video_tool.server:app --reload --port 8265
-
+```
 2. Öffne deinen Browser und rufe die angezeigte Adresse auf (z. B. http://127.0.0.1:8265).
 
 3. Ziehe dein Video per Drag & Drop in die Upload-Zone oder wähle es aus.
@@ -57,12 +59,14 @@ uvicorn video_tool.server:app --reload --port 8265
 
 5. Klicke auf Encoding starten. Der Live-Fortschritt und alle Log-Meldungen erscheinen direkt im Live-Reporting-Fenster.
 
-Option B: Über die Kommandozeile (CLI)
+**Option B:** Über die Kommandozeile (CLI)
 Du kannst das Skript weiterhin direkt über Python oder die PowerShell ausführen:
-
+```
 PowerShell
 python video_tool/main.py --input "C:\Videos\MeinFilm.mkv" --codec hevc
+```
 
+---
 
 ## 🛡️ Technische Details zu Audio & Untertiteln
 
