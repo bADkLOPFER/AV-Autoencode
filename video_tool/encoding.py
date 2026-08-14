@@ -187,7 +187,8 @@ def build_encoder_args(
             args.extend(["-preset", "4", "-crf", str(quality_value)])
         else:
             if hw.name == "nvenc":
-                args.extend(["-preset", "p6", "-rc", "vbr", "-cq", str(quality_value)])
+                # GEÄNDERT: constqp funktioniert für Test-Samples ohne Bitraten-Vorgabe zuverlässig
+                args.extend(["-preset", "p6", "-rc", "constqp", "-qp", str(quality_value)])
             elif hw.name == "videotoolbox":
                 args.extend(["-q:v", str(quality_value)])
             elif hw.name == "qsv":

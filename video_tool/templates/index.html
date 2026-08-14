@@ -121,16 +121,27 @@
                 startBtn.disabled = false;
                 startBtn.textContent = 'Encoding starten';
                 cancelBtn.classList.add('hidden');
+                resetUI();
             } else if (msg.includes("KRITISCHER FEHLER") || msg.includes("ABBRUCH")) {
                 statusText.textContent = "Fehler";
                 statusText.className = "text-red-400";
                 startBtn.disabled = false;
                 startBtn.textContent = 'Encoding starten';
                 cancelBtn.classList.add('hidden');
+                resetUI();
             }
 
         };
 
+        function resetUI() {
+            document.getElementById('start-btn').disabled = false;
+            document.getElementById('cancel-btn').disabled = true;
+            document.getElementById('progress-bar').style.width = '0%';
+            // Eventuelle File-Inputs löschen:
+            document.getElementById('file-upload').value = "";
+            document.getElementById('status-display').innerText = "Bereit für neuen Auftrag.";
+        }
+        
         // --- FILE HANDLING ---
         dropZone.addEventListener('click', () => fileInput.click());
         fileInput.addEventListener('change', (e) => handleFile(e.target.files[0]));

@@ -10,6 +10,7 @@ import uvicorn
 import asyncio
 import logging
 import shutil
+import job_state
 import subprocess # Hinzufügen, falls noch nicht vorhanden
 import signal
 from paths import PATHS
@@ -190,11 +191,13 @@ async def start_encode(
 
 @app.post("/cancel-encode")
 async def cancel_encode():
-    global ACTIVE_PROCESS
-    if ACTIVE_PROCESS and ACTIVE_PROCESS.poll() is None:
-        ACTIVE_PROCESS.terminate() # Prozess beenden
-        ACTIVE_PROCESS = None
-        return {"status": "success", "message": "Encoding wurde abgebrochen."}
+    proc = job_state.get_process()
+    if proc and proc.poll() is None:
+        proc.terminate() # Prozess beenden
+        job_state.set_process(None)
+        # Sende "RESET"-Signal an alle verbundenen WebSockets
+        await manager.broadcast("[JOB_CANCELLED]")
+        return {"status": "success", "message": "Encoding abgebrochen."}
     return {"status": "error", "message": "Kein aktiver Job gefunden."}
 
 def find_free_port(DEFAULT_WEB_PORT: int) -> int:
@@ -215,4 +218,4 @@ if __name__ == "__main__":
     port = find_free_port(DEFAULT_WEB_PORT)
     print(f"Listening on port {port}")
     # 2. Uvicorn sauber starten (ohne await!)
-    uvicorn.run(app, host="127.0.0.1", port=port)
+    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=True)

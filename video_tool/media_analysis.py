@@ -139,10 +139,9 @@ def _measure_delta_at(
     file_path: Path,
     timestamp: float,
     work_dir: Path,
-    encoder: str = "ffmpeg",
-    codec: str = "av1",
     ffmpeg_bin: Path = Path("ffmpeg"),
     sample_duration: float = 5.0,
+    quality_value: int = 28,
 ) -> float:
     """Misst die Komprimierbarkeit (Delta-Bitrate) an einem Zeitstempel."""
     ensure_dir(work_dir)
@@ -160,6 +159,7 @@ def _measure_delta_at(
         "-i", str(file_path),
         "-t", str(sample_duration),
         "-map", "0:v:0",
+        "-an", "-sn",
         "-c:v", "copy",
         "-avoid_negative_ts", "make_zero",
         str(ref_sample),
@@ -172,16 +172,19 @@ def _measure_delta_at(
             return 0.0
 
         # 2. Benchmark-Encode (Q=26, ungefiltert)
-        enc_cmd = build_encoder_args(
-            input_path=ref_sample,
-            output_path=test_encoded,
-            encoder=encoder,
-            codec=codec,
-            quality_value=26,
-            ai_choice="1",
-            use_nnedi=False,
-            denoise_mode="off",
-        )
+        enc_cmd = [
+            str(ffmpeg_bin),
+            "-hide_banner",
+            "-loglevel", "error",
+            "-y",
+            "-i", str(ref_sample),
+            "-c:v", "libx265",          # Zuverlässiger Software-Codec für den Test
+            "-preset", "ultrafast",     # Maximaler Speed für den Preflight
+            "-crf", str(quality_value), # Stabiles CRF statt hardwareabhängigem Rate-Control
+            "-an",                      # Kein Audio
+            "-sn",                      # Keine Untertitel
+            str(test_encoded),
+        ]
         subprocess.run(enc_cmd, capture_output=True, text=True, check=True)
         test_size = test_encoded.stat().st_size
 
@@ -201,7 +204,7 @@ def _measure_delta_at(
         return round(delta, 1)
 
     except Exception as exc:
-        logger.warning("Delta-Messung an Position %.2fs fehlgeschlagen: %s", timestamp, exc)
+        logger.error("Delta-Messung an Position %.2fs fehlgeschlagen: %s", timestamp, exc)
         if ref_sample.exists():
             ref_sample.unlink()
         if test_encoded.exists():
@@ -236,9 +239,9 @@ def analyze_noise_and_quality(
 
     logger.info("Starte Kompressions-Delta-Rauschanalyse (33%%, 66%%, Peak)...")
 
-    delta_33 = _measure_delta_at(file_path, t_33, target_work_dir, encoder, codec, ffmpeg_bin)
-    delta_66 = _measure_delta_at(file_path, t_66, target_work_dir, encoder, codec, ffmpeg_bin)
-    delta_peak = _measure_delta_at(file_path, t_peak, target_work_dir, encoder, codec, ffmpeg_bin)
+    delta_33 = _measure_delta_at(file_path, t_33, target_work_dir, ffmpeg_bin)
+    delta_66 = _measure_delta_at(file_path, t_66, target_work_dir, ffmpeg_bin)
+    delta_peak = _measure_delta_at(file_path, t_peak, target_work_dir, ffmpeg_bin)
 
     delta_weighted = (delta_33 * 0.25) + (delta_66 * 0.25) + (delta_peak * 0.50)
 

@@ -541,6 +541,7 @@ def run_encoding_job(config: dict):
         
         # 2. In die Log-Datei schreiben (damit es für die Analyse erhalten bleibt)
         logging.info(completion_msg)
+        print("[JOB_FINISHED]")
         return 0
 
     
