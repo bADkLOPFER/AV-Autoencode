@@ -270,8 +270,8 @@ def run_vmaf_score(
 
     # 2. Filter-String mit f-string und sauberem Relativpfad für den Work-Ordner
     vmaf_filter = (
-        "[0:v]setpts=PTS-STARTPTS,format=yuv420p10le[ref];"
-        "[1:v]setpts=PTS-STARTPTS,format=yuv420p10le[dist];"
+        "[0:v]setpts=PTS-STARTPTS,format=yuv420p[ref];"
+        "[1:v]setpts=PTS-STARTPTS,format=yuv420p[dist];"
         "[dist][ref]scale2ref[dist_sc][ref_sc];"
         "[dist_sc][ref_sc]libvmaf=log_fmt=json:log_path=vmaf_temp.json:n_threads=4"
     )
