@@ -1,0 +1,9 @@
+# Core Framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+
+# Required for File Uploads in FastAPI (UploadFile)
+python-multipart>=0.0.9
+
+# Process management (used for robust status checks)
+psutil>=6.0.0

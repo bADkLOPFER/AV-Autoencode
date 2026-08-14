@@ -1,22 +1,15 @@
 @echo off
-chcp 65001 >nul
-title AutoTune Python Starter
+:: Start script für Windows
+echo --- Starting Application ---
 
-set "SCRIPT_DIR=%~dp0"
-cd /d "%SCRIPT_DIR%"
-
-set "PYTHON_EXE=%SCRIPT_DIR%.venv\Scripts\python.exe"
-if not exist "%PYTHON_EXE%" set "PYTHON_EXE=python"
-
-if "%~1"=="" (
-    echo [INFO] Keinen Film übergeben. Starte interaktiven Modus...
-    "%PYTHON_EXE%" -m video_tool.main
-) else (
-    "%PYTHON_EXE%" -m video_tool.main "%~1"
-)
-
-if errorlevel 1 (
-    echo.
-    echo [FEHLER] Skriptausführung fehlgeschlagen.
+:: Check for venv
+IF NOT EXIST "venv" (
+    echo [ERROR] Virtual environment 'venv' nicht gefunden. Bitte erst deployen!
     pause
+    exit /b
 )
+
+:: Activate and run
+call venv\Scripts\activate
+python -m uvicorn server:app --host 0.0.0.0 --port 8000
+pause
