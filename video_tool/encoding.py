@@ -115,6 +115,8 @@ def build_encoder_args(
     encoder: str = "ffmpeg",
     codec: str = "hevc",
     quality_value: int = 22,
+    bitrate_mode: str = "cbr",  # Wieder aufgenommen, um main.py kompatibel zu halten
+    bitrate: int = 5000,        # Wieder aufgenommen
     audio_mode: str = "copy",
     subtitle_burn: bool = False,
     ai_choice: str = "1",
@@ -195,8 +197,8 @@ def build_encoder_args(
             else:
                 args.extend(["-preset", "slow", "-crf", str(quality_value)])
 
-        if quality_metric and quality_metric != "none":
-            extra_list.extend(["--metric", quality_metric]) if isinstance(quality_metric, str) else [] # safe append
+        #if quality_metric and quality_metric != "none":
+        #    extra_list.extend(["--metric", quality_metric]) if isinstance(quality_metric, str) else [] # safe append
             
         args.extend(extra_list)
 
