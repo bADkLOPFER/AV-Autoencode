@@ -190,6 +190,12 @@ async def cleanup_work_dir():
     except Exception as e:
         print(f"Fehler beim Bereinigen des Arbeitsverzeichnisses: {e}")
 
+@app.get("/status")
+async def get_status():
+    global ACTIVE_PROCESS
+    is_running = ACTIVE_PROCESS is not None and ACTIVE_PROCESS.returncode is None
+    return {"running": is_running}
+
 @app.post("/cancel-encode")
 async def cancel_encode():
     global ACTIVE_PROCESS, CANCEL_REQUESTED

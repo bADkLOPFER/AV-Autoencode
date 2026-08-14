@@ -212,6 +212,26 @@
                     if (hdrRadio) hdrRadio.checked = true;
                 }
             } catch (err) { console.error("Konnte Config nicht laden"); }
+            // 2. Prüfen, ob im Hintergrund bereits ein Job läuft (F5-Synchronisation)
+            try {
+                const statusRes = await fetch('/status');
+                const statusData = await statusRes.json();
+                
+                if (statusData.running) {
+                    console.log("Aktiver Prozess nach F5 erkannt. Synchronisiere UI...");
+                    startBtn.disabled = true;
+                    startBtn.textContent = 'Encoding läuft...';
+                    cancelBtn.classList.remove('hidden');
+                    cancelBtn.disabled = false;
+                    statusText.textContent = "Aktiv (Wiederhergestellt)";
+                    statusText.className = "text-green-400";
+                    
+                    logBox.innerHTML += `<div class="text-yellow-400">[System] Seite neu geladen – Verbindung zu laufendem Job wiederhergestellt.</div>`;
+                    logBox.scrollTop = logBox.scrollHeight;
+                }
+            } catch (err) {
+                console.error("Konnte Job-Status nicht abrufen", err);
+            }
         });
 
         // --- FORM SUBMIT ---
