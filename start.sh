@@ -8,4 +8,5 @@ if [ ! -d "venv" ]; then
 fi
 
 source venv/bin/activate
+cd video_tool
 exec python -m uvicorn server:app --host 0.0.0.0 --port 8000

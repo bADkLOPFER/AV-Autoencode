@@ -196,7 +196,7 @@ def build_encoder_args(
                 args.extend(["-preset", "slow", "-crf", str(quality_value)])
 
         if quality_metric and quality_metric != "none":
-            extra_list.extend(["--metric", quality_metric]) if isinstance(quality_metric, str) else []) # safe append
+            extra_list.extend(["--metric", quality_metric]) if isinstance(quality_metric, str) else [] # safe append
             
         args.extend(extra_list)
 
