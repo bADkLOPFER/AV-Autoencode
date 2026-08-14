@@ -115,8 +115,6 @@ def build_encoder_args(
     encoder: str = "ffmpeg",
     codec: str = "hevc",
     quality_value: int = 22,
-    bitrate_mode: str = "cbr",
-    bitrate: int = 5000,
     audio_mode: str = "copy",
     subtitle_burn: bool = False,
     ai_choice: str = "1",
@@ -169,7 +167,6 @@ def build_encoder_args(
         v_filters: List[str] = []
         denoise_args = map_denoise_to_filter(denoise_mode, encoder="ffmpeg")
         if denoise_args:
-            # Extrahiere nur den Wert nach "-vf" (z.B. "hqdn3d=3:3:6:6")
             v_filters.append(denoise_args[1])
             
         if subtitle_burn:
@@ -198,14 +195,8 @@ def build_encoder_args(
             else:
                 args.extend(["-preset", "slow", "-crf", str(quality_value)])
 
-        # Bitraten-Steuerung als Fallback/Zusatz
-        if bitrate_mode == "cbr":
-            args.extend(["-b:v", str(bitrate)])
-        elif bitrate_mode == "vbr":
-            args.extend(["-b:v", str(bitrate), "-maxrate", str(bitrate), "-bufsize", str(max(bitrate * 2, bitrate))])
-
         if quality_metric and quality_metric != "none":
-            extra_list.extend(["--metric", quality_metric])
+            extra_list.extend(["--metric", quality_metric]) if isinstance(quality_metric, str) else []) # safe append
             
         args.extend(extra_list)
 
