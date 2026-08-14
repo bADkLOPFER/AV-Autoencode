@@ -160,7 +160,7 @@ def build_encoder_args(
         hw: HWProfile = detect_hardware(ffmpeg_bin)
         args = [str(ffmpeg_bin), "-hide_banner", "-loglevel", "info", "-y"]
         
-        if hw.hwaccel_flag:
+        if getattr(hw, "mode", "").lower() != "cpu" and hw.hwaccel_flag:
             args.extend(["-hwaccel", hw.hwaccel_flag])
 
         args.extend(["-i", str(input_path), "-map", "0"])
