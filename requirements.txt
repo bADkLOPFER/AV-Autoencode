@@ -7,3 +7,5 @@ python-multipart>=0.0.9
 
 # Process management (used for robust status checks)
 psutil>=6.0.0
+
+jinja2>=3.0.0
