@@ -179,7 +179,24 @@
             }
         };
 
-
+        async function uploadFile(file) {
+            const CHUNK_SIZE = 50 * 1024 * 1024; // 50MB
+            const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+            
+            for (let i = 0; i < totalChunks; i++) {
+                const chunk = file.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+                const formData = new FormData();
+                formData.append("file", chunk);
+                formData.append("filename", file.name);
+                formData.append("chunkIndex", i);
+                formData.append("totalChunks", totalChunks);
+                
+                await fetch("/upload-chunk", {
+                    method: "POST",
+                    body: formData
+                });
+            }
+        }
 
         // --- FILE HANDLING ---
         dropZone.addEventListener('click', () => fileInput.click());

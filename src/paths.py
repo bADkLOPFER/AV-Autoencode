@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
 
 def detect_platform() -> str:
     if sys.platform.startswith("win"):
@@ -14,27 +15,35 @@ def detect_platform() -> str:
         return "linux"
     return "unknown"
 
-PROJECT_ROOT = SCRIPT_DIR.parent
-
 PLATFORM = detect_platform()
 IS_WINDOWS = PLATFORM == "windows"
 IS_MACOS = PLATFORM == "macos"
 IS_LINUX = PLATFORM == "linux"
 
+# --- Headless Ordnerstruktur ---
+INBOX_DIR = PROJECT_ROOT / "Inbox"
+WORK_DIR = PROJECT_ROOT / "Work"
+RESULT_DIR = PROJECT_ROOT / "Result"
+CONFIG_DIR = PROJECT_ROOT / "config"
+
+def init_directories() -> None:
+    """Erstellt alle benötigten Headless-Verzeichnisse."""
+    for directory in [INBOX_DIR, WORK_DIR, RESULT_DIR, CONFIG_DIR]:
+        directory.mkdir(parents=True, exist_ok=True)
 
 if IS_WINDOWS:
     PATHS = {
         "ffmpeg": PROJECT_ROOT / "FFMPeg" / "ffmpeg.exe",
         "ffprobe": PROJECT_ROOT / "FFMPeg" / "ffprobe.exe",
         "nvencc": PROJECT_ROOT / "NVEncC" / "nvencc64.exe",
-        "results": PROJECT_ROOT / "Results",
+        "results": RESULT_DIR,
     }
 elif IS_MACOS:
     PATHS = {
         "ffmpeg": Path("/opt/homebrew/bin/ffmpeg"),
         "ffprobe": Path("/opt/homebrew/bin/ffprobe"),
         "nvencc": None,
-        "results": SCRIPT_DIR / "Results",
+        "results": RESULT_DIR,
     }
 else:
     PATHS = {
@@ -42,5 +51,7 @@ else:
         "ffmpeg_vmaf": Path("/usr/local/bin/ffmpeg"),
         "ffprobe": Path("/usr/bin/ffprobe"),
         "nvencc": Path("/usr/local/bin/nvencc"),
-        "results": SCRIPT_DIR / "Results",
+        "results": RESULT_DIR,
     }
+
+init_directories()

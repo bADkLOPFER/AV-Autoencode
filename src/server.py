@@ -4,6 +4,8 @@ import subprocess
 import sys
 import shutil
 import logging
+import os
+import json
 from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, File, Form, UploadFile, WebSocket, WebSocketDisconnect
@@ -12,7 +14,8 @@ from fastapi.responses import JSONResponse
 from typing import List
 
 # Importe aus dem Projekt
-from paths import PATHS
+from paths import WORK_DIR, RESULT_DIR, PATHS
+
 # Importiere Defaults sicher
 try:
     from config import DEFAULT_WEB_PORT, WORKFLOW_DEFAULTS
@@ -61,7 +64,6 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-# --- STREAMING LOGIK ---
 async def stream_and_broadcast(stream: asyncio.StreamReader):
     try:
         while True:
@@ -90,6 +92,60 @@ app = FastAPI(lifespan=lifespan)
 templates = Jinja2Templates(directory="templates")
 
 # --- ENDPUNKTE ---
+@app.get("/jobs")
+async def get_all_jobs():
+    """
+    Liest alle aktiven Jobs aus Work/ und alle abgeschlossenen aus Result/.
+    Stört keine bestehenden Routen und arbeitet rein lesend.
+    """
+    active_jobs = []
+    completed_jobs = []
+
+    # 1. Aktive Jobs aus Work/ auslesen
+    if WORK_DIR.exists():
+        for job_file in WORK_DIR.glob("*.job.json"):
+            try:
+                data = json.loads(job_file.read_text(encoding="utf-8"))
+                active_jobs.append(data)
+            except Exception as err:
+                logger.warning(f"Konnte Job-Datei {job_file.name} nicht lesen: {err}")
+
+    # 2. Abgeschlossene Jobs aus Result/ auslesen
+    if RESULT_DIR.exists():
+        for job_file in RESULT_DIR.glob("*.job.json"):
+            try:
+                data = json.loads(job_file.read_text(encoding="utf-8"))
+                completed_jobs.append(data)
+            except Exception as err:
+                logger.warning(f"Konnte Result-Datei {job_file.name} nicht lesen: {err}")
+
+    return {
+        "status": "success",
+        "active": active_jobs,
+        "completed": completed_jobs
+    }
+
+@app.post("/upload-chunk")
+async def upload_chunk(
+    file: UploadFile = File(...),
+    filename: str = Form(...),
+    chunkIndex: int = Form(...),
+    totalChunks: int = Form(...)
+):
+    save_path = WORK_DIR / filename
+    
+    # 'ab' = Append Binary (hängt Daten an, statt zu überschreiben)
+    with open(save_path, "ab") as f:
+        content = await file.read()
+        f.write(content)
+        
+    # Wenn letzter Chunk, Encoding starten
+    if chunkIndex == totalChunks - 1:
+        # Hier triggerst du dann dein start_encode mit dem fertigen Pfad
+        return {"status": "finished"}
+        
+    return {"status": "chunk_received"}
+
 @app.get("/")
 async def read_root(request: Request):
     return templates.TemplateResponse(request=request, name="index.html", context={"request": request})
@@ -109,29 +165,38 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
 
 @app.post("/start-encode")
-async def start_encode(
-    request: Request,
-    file: UploadFile = File(...),
-    codec: str = Form("av1"),
-    ai_choice: str = Form("2")
-):
+async def start_encode(request: Request):
     global ACTIVE_PROCESS, CANCEL_REQUESTED
     CANCEL_REQUESTED = False  
     
-    staged_file_path = WORK_DIR / f"{Path(file.filename).stem}_uploaded{Path(file.filename).suffix}"
+    try:
+        form = await request.form()
+        uploaded_file: UploadFile = form.get("file")
+        codec = form.get("codec", "av1")
+        hdr_mode = form.get("hdr_mode", "normal")
+        
+        # Mapping von index.html (hdr_mode) auf main.py (ai_choice)
+        ai_choice = "2" if hdr_mode == "truehdr" else "1"
+        
+        if not uploaded_file:
+            return JSONResponse(status_code=400, content={"status": "error", "message": "Keine Datei übergeben."})
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"status": "error", "message": f"Fehler beim Lesen des Requests: {e}"})
+
+    staged_file_path = WORK_DIR / f"{Path(uploaded_file.filename).stem}_uploaded{Path(uploaded_file.filename).suffix}"
     
-    # Falls eine alte, korrupte Datei vom vorherigen Abbruch da ist, weg damit!
     if staged_file_path.exists():
         staged_file_path.unlink()
 
     content_length = int(request.headers.get("content-length", 0))
-    file_size_gb = content_length / (1024**3)
-    free_space_gb = shutil.disk_usage(WORK_DIR.anchor).free / (1024**3)
+    file_size_gb = content_length / (1024**3) if content_length > 0 else 0
     
-    if free_space_gb < (file_size_gb * WORKFLOW_DEFAULTS.get("disk_space_multiplier", 1.5)):
-        return JSONResponse(status_code=400, content={"status": "error", "message": "Zu wenig Speicherplatz."})
+    if file_size_gb > 0:
+        free_space_gb = shutil.disk_usage(WORK_DIR.anchor).free / (1024**3)
+        if free_space_gb < (file_size_gb * WORKFLOW_DEFAULTS.get("disk_space_multiplier", 1.5)):
+            return JSONResponse(status_code=400, content={"status": "error", "message": "Zu wenig Speicherplatz."})
 
-    # Datei in Blöcken speichern mit Abbruch-Überwachung
+    # Datei kontrolliert in Blöcken speichern
     try:
         with open(staged_file_path, "wb") as buffer:
             while True:
@@ -141,22 +206,20 @@ async def start_encode(
                         staged_file_path.unlink()
                     return JSONResponse(status_code=400, content={"status": "error", "message": "Upload abgebrochen."})
                 
-                chunk = await file.read(1024 * 1024) 
+                chunk = await uploaded_file.read(1024 * 1024) 
                 if not chunk:
                     break
                 buffer.write(chunk)
     except Exception as e:
         if staged_file_path.exists():
             staged_file_path.unlink()
-        return JSONResponse(status_code=400, content={"status": "error", "message": f"Fehler beim Upload: {e}"})
+        return JSONResponse(status_code=400, content={"status": "error", "message": f"Fehler beim Speichern der Datei: {e}"})
 
-    # Letzter Check: Wurde während des Schreibens abgebrochen oder ist die Datei leer?
     if CANCEL_REQUESTED or not staged_file_path.exists() or staged_file_path.stat().st_size == 0:
         if staged_file_path.exists():
             staged_file_path.unlink()
         return JSONResponse(status_code=400, content={"status": "error", "message": "Job abgebrochen oder Datei leer."})
 
-    # Subprozess starten
     cmd = [
         sys.executable, "-u", "main.py",
         str(staged_file_path),
@@ -229,4 +292,14 @@ async def cancel_encode():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("server:app", host="0.0.0.0", port=DEFAULT_WEB_PORT, reload=False)
+    # Erhöhe das Limit für die Request-Größe (hier auf 10GB = 10 * 1024 * 1024 * 1024)
+    # Damit wird der Parser nicht mehr bei großen Dateien vorzeitig abgebrochen.
+    uvicorn.run(
+        "server:app", 
+        host="0.0.0.0", 
+        port=DEFAULT_WEB_PORT, 
+        reload=False,
+        limit_concurrency=10,
+        # Das Limit hier ist entscheidend:
+        limit_max_requests=1000
+    )
