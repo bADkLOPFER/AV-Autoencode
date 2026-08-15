@@ -1,0 +1,14 @@
+{
+  "job_id": "output_schnipsel_a46e87",
+  "input_file": "C:\\Users\\webma\\Downloads\\AV-Encode\\Work\\output_schnipsel.mkv",
+  "status": "finished",
+  "step": "COMPLETED",
+  "options": {
+    "codec": "av1",
+    "encoder": "nvencc",
+    "quality": 22
+  },
+  "computed_cq": 30,
+  "completed_at": 1786801767.9639368,
+  "duration_sec": 121.6
+}

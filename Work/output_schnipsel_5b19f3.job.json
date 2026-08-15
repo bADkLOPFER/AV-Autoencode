@@ -1,0 +1,11 @@
+{
+  "job_id": "output_schnipsel_5b19f3",
+  "input_file": "C:\\Users\\webma\\Downloads\\AV-Encode\\Work\\output_schnipsel.mkv",
+  "status": "processing",
+  "step": "VMAF_ANALYSIS",
+  "options": {
+    "codec": "av1",
+    "encoder": "nvencc",
+    "quality": 22
+  }
+}

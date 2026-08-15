@@ -24,11 +24,12 @@ IS_LINUX = PLATFORM == "linux"
 INBOX_DIR = PROJECT_ROOT / "Inbox"
 WORK_DIR = PROJECT_ROOT / "Work"
 RESULT_DIR = PROJECT_ROOT / "Result"
+DONE_DIR = PROJECT_ROOT / "Done"
 CONFIG_DIR = PROJECT_ROOT / "config"
 
 def init_directories() -> None:
     """Erstellt alle benötigten Headless-Verzeichnisse."""
-    for directory in [INBOX_DIR, WORK_DIR, RESULT_DIR, CONFIG_DIR]:
+    for directory in [INBOX_DIR, WORK_DIR, RESULT_DIR, DONE_DIR, CONFIG_DIR]:
         directory.mkdir(parents=True, exist_ok=True)
 
 if IS_WINDOWS:

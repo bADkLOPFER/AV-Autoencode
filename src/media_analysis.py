@@ -3,17 +3,20 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
-    from .paths import PATHS
-    from .encoding import build_encoder_args
-    from .utils import ensure_dir, logger
+    from .config import CONFIG
+    from .paths import WORK_DIR, PATHS
+    from .encoding import build_encoder_args, run_command
+    from .utils import _clamp, ensure_dir, logger
 except ImportError:  # pragma: no cover
-    from paths import PATHS
-    from encoding import build_encoder_args
-    from utils import ensure_dir, logger
+    from config import CONFIG
+    from paths import WORK_DIR, PATHS
+    from encoding import build_encoder_args, run_command
+    from utils import _clamp, ensure_dir, logger
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +214,127 @@ def _measure_delta_at(
             test_encoded.unlink()
         return 0.0
 
+# --- Parameter & Quality Estimator Logic ---
+
+def default_quality_estimator(plan: Dict[str, Any], candidate_quality: int, requested_quality: int) -> float:
+    target_vmaf = float(plan.get("target_vmaf", 97.0))
+    lower_bound = float(plan.get("lower_bound", target_vmaf - 0.5))
+    upper_bound = float(plan.get("upper_bound", target_vmaf + 0.5))
+
+    delta = (candidate_quality - requested_quality) / 10.0
+    estimate = target_vmaf + delta * 0.35
+
+    if plan.get("noise_level") == "heavy":
+        estimate -= 0.2
+    elif plan.get("noise_level") == "medium":
+        estimate -= 0.1
+    elif plan.get("noise_level") == "light":
+        estimate -= 0.05
+
+    return _clamp(estimate, lower_bound - 0.7, upper_bound + 0.7)
+
+
+def find_quality_value_nvenc(
+    plan: Dict[str, Any],
+    codec: str = "hevc",
+    encoder: str = "nvencc",
+    requested_quality: int = 22,
+    estimator: Optional[Callable[[Dict[str, Any], int, int], float]] = None,
+) -> Dict[str, Any]:
+    target_vmaf = float(plan.get("target_vmaf", 97.0))
+    lower_bound = float(plan.get("lower_bound", target_vmaf - 0.5))
+    upper_bound = float(plan.get("upper_bound", target_vmaf + 0.5))
+
+    max_qvbr = 34 if codec == "av1" else 30
+    qvbr = 26 if codec == "av1" else 22
+    steps = [4, 2, 1]
+    attempts: List[Dict[str, Any]] = []
+    last_vmaf: Optional[float] = None
+    estimate_fn = estimator or default_quality_estimator
+
+    for step in steps:
+        vmaf = float(estimate_fn(plan, qvbr, requested_quality))
+        attempts.append({"qvbr": qvbr, "vmaf": round(vmaf, 3)})
+        last_vmaf = vmaf
+
+        if lower_bound <= vmaf <= upper_bound:
+            return {"quality_value": qvbr, "attempts": attempts, "vmaf": vmaf}
+
+        if vmaf > upper_bound:
+            qvbr += step
+        elif vmaf < lower_bound:
+            qvbr -= step
+
+        qvbr = int(_clamp(qvbr, 1, max_qvbr))
+
+    if last_vmaf is not None and last_vmaf > upper_bound and qvbr < max_qvbr:
+        while qvbr < max_qvbr:
+            qvbr = int(min(max_qvbr, qvbr + 2))
+            vmaf = float(estimate_fn(plan, qvbr, requested_quality))
+            attempts.append({"qvbr": qvbr, "vmaf": round(vmaf, 3)})
+            last_vmaf = vmaf
+            if lower_bound <= vmaf <= upper_bound:
+                return {"quality_value": qvbr, "attempts": attempts, "vmaf": vmaf}
+
+    closest = min(attempts, key=lambda item: (abs(float(item["vmaf"]) - target_vmaf), -float(item["vmaf"])))
+    return {"quality_value": int(closest["qvbr"]), "attempts": attempts, "vmaf": float(closest["vmaf"])}
+
+
+def find_quality_value_ffmpeg(
+    plan: Dict[str, Any],
+    codec: str = "hevc",
+    requested_quality: int = 22,
+) -> Dict[str, Any]:
+    target_vmaf = float(plan.get("target_vmaf", 97.0))
+    lower_bound = float(plan.get("lower_bound", target_vmaf - 0.5))
+    upper_bound = float(plan.get("upper_bound", target_vmaf + 0.5))
+
+    max_crf = 28 if codec == "av1" else 24
+    crf = 24 if codec == "av1" else 22
+    steps = [2, 1]
+    attempts: List[Dict[str, Any]] = []
+    last_vmaf: Optional[float] = None
+
+    for step in steps:
+        vmaf = float(default_quality_estimator(plan, crf, requested_quality))
+        attempts.append({"crf": crf, "vmaf": round(vmaf, 3)})
+        last_vmaf = vmaf
+
+        if lower_bound <= vmaf <= upper_bound:
+            return {"quality_value": crf, "attempts": attempts, "vmaf": vmaf}
+
+        if vmaf > upper_bound:
+            crf -= step
+        elif vmaf < lower_bound:
+            crf += step
+
+        crf = int(_clamp(crf, 1, max_crf))
+
+    if last_vmaf is not None and last_vmaf > upper_bound and crf < max_crf:
+        while crf < max_crf:
+            crf = int(min(max_crf, crf + 1))
+            vmaf = float(default_quality_estimator(plan, crf, requested_quality))
+            attempts.append({"crf": crf, "vmaf": round(vmaf, 3)})
+            last_vmaf = vmaf
+            if lower_bound <= vmaf <= upper_bound:
+                return {"quality_value": crf, "attempts": attempts, "vmaf": vmaf}
+
+    closest = min(attempts, key=lambda item: (abs(float(item["vmaf"]) - target_vmaf), -float(item["vmaf"])))
+    return {"quality_value": int(closest["crf"]), "attempts": attempts, "vmaf": float(closest["vmaf"])}
+
+
+def recommend_quality_value(
+    plan: Dict[str, Any],
+    codec: str = "hevc",
+    encoder: str = "nvencc",
+    requested_quality: int = 22,
+) -> int:
+    if encoder == "ffmpeg":
+        result = find_quality_value_ffmpeg(plan, codec=codec, requested_quality=requested_quality)
+        return int(result["quality_value"])
+
+    result = find_quality_value_nvenc(plan, codec=codec, encoder=encoder, requested_quality=requested_quality)
+    return int(result["quality_value"])
 
 def analyze_noise_and_quality(
     file_path: Path,
@@ -220,11 +344,14 @@ def analyze_noise_and_quality(
     work_dir: Optional[Path] = None,
     encoder: str = "ffmpeg",
     codec: str = "av1",
+    logger=None
 ) -> Dict[str, Any]:
     """Führt eine Multi-Point Kompressions-Delta-Analyse (33%, 66%, Peak) durch."""
+    if logger is None:
+        logger = logging.getLogger("omni_pipeline")
     ffmpeg_bin = Path(ffmpeg_path) if ffmpeg_path else PATHS.get("ffmpeg", Path("ffmpeg"))
     ffprobe_bin = Path(ffprobe_path) if ffprobe_path else PATHS.get("ffprobe", Path("ffprobe"))
-    target_work_dir = work_dir if work_dir else PATHS.get("results", Path(".")) / "Work"
+    target_work_dir = Path(work_dir) if work_dir else WORK_DIR
 
     if not bitrate_info:
         bitrate_info = get_bitrate_info(file_path, ffprobe_bin=ffprobe_bin)
@@ -319,6 +446,162 @@ def analyze_media(file_path: Path, ffprobe_path: Optional[str] = None) -> Dict[s
         "bitrate_info": bitrate_info,
     }
 
+def run_vmaf_score(
+    reference_path: Path,
+    encoded_sample_path: Path,
+    sample_start: int = 0,
+    sample_duration: int = 10,
+    ffmpeg_bin: Path = Path("ffmpeg_vmaf")
+) -> float:
+    """Führt den libvmaf-Vergleich durch, resetted Timestamps und erzwingt 10-Bit YUV."""
+    work_dir = Path(encoded_sample_path).parent
+    vmaf_json = work_dir / "vmaf_temp.json"
+
+    if vmaf_json.exists():
+        vmaf_json.unlink(missing_ok=True)
+
+    # 2. Filter-String mit f-string und sauberem Relativpfad für den Work-Ordner
+    vmaf_filter = (
+        "[0:v]setpts=PTS-STARTPTS,format=yuv420p10le[ref];"
+        "[1:v]setpts=PTS-STARTPTS,format=yuv420p10le[dist];"
+        "[dist][ref]scale2ref[dist_sc][ref_sc];"
+        "[dist_sc][ref_sc]libvmaf=log_fmt=json:log_path=vmaf_temp.json:n_threads=4"
+    )
+
+    cmd = [
+        str(ffmpeg_bin), "-hide_banner", "-loglevel", "error", "-y",
+        "-i", str(reference_path),
+        "-i", str(encoded_sample_path),
+        "-filter_complex", vmaf_filter,
+        "-f", "null", "-"
+    ]
+
+    try:
+        subprocess.run(cmd, cwd=str(work_dir), capture_output=True, text=True, check=True)
+        if vmaf_json.exists():
+            data = json.loads(vmaf_json.read_text(encoding="utf-8"))
+            vmaf_json.unlink(missing_ok=True)
+            return float(data["pooled_metrics"]["vmaf"]["mean"])
+    except Exception as err:
+        logger.error("Fehler bei der VMAF-Berechnung: %s", err)
+
+    return 0.0
+
+def calibrate_quality_vmaf(
+    input_path: Path,
+    work_dir: Path,
+    noise_plan: Dict[str, Any],
+    codec: str,
+    encoder: str,
+    initial_q: int,
+) -> Tuple[int, float]:
+    """Erstellt ein Test-Sample an der Peak-Szene, kalibriert VMAF und misst die Encoding-Dauer."""
+    peak_time = float(noise_plan.get("peak_timestamp_sec", 0.0))
+    denoise_mode = noise_plan.get("denoise_mode", "off")
+
+    print(f"[>] VMAF-Kalibrierung: Analysiere Peak-Szene bei {peak_time:.2f}s (Denoise: {denoise_mode})")
+    logger.debug("VMAF-Kalibrierung gestartet für %s bei %.2fs mit Denoise '%s'", input_path.name, peak_time, denoise_mode)
+    
+    ensure_dir(work_dir)
+
+    ffmpeg_bin = PATHS.get("ffmpeg", Path("ffmpeg"))
+    ffmpeg_vmaf_bin = ffmpeg_bin
+    if str(CONFIG.get("platform", "")).lower() not in ("windows", "win32"):
+        ffmpeg_vmaf_bin = PATHS.get("ffmpeg_vmaf", Path("ffmpeg_vmaf"))
+
+    ref_sample = work_dir / f"{input_path.stem}_ref_peak_10s.mkv"
+
+    cut_cmd = [
+        str(ffmpeg_bin),
+        "-hide_banner",
+        "-loglevel", "error",
+        "-y",
+        "-ss", str(peak_time),
+        "-i", str(input_path),
+        "-t", "10",
+        "-map", "0:v:0",
+        "-c:v", "copy",
+        "-avoid_negative_ts", "make_zero",
+        str(ref_sample),
+    ]
+
+    logger.debug("FFmpeg Referenz-Extraktionsbefehl: %s", " ".join(cut_cmd))
+    print(f"    -> Erstelle 10s Referenz-Sample im Arbeitsverzeichnis...")
+
+    try:
+        run_command(cut_cmd)
+    except Exception as exc:
+        logger.warning("Referenz-Sample konnte nicht erstellt werden: %s. Nutze Startwert %d.", exc, initial_q)
+        return initial_q, 0.0
+
+    target_vmaf = float(noise_plan.get("target_vmaf", 95.0))
+    lower_bound = float(noise_plan.get("lower_bound", target_vmaf - 0.8))
+    upper_bound = float(noise_plan.get("upper_bound", target_vmaf + 0.8))
+
+    current_q = initial_q
+    best_q = current_q
+    min_delta = 999.0
+    last_sample_duration = 0.0
+
+    for attempt in range(1, 4):
+        test_encoded = work_dir / f"{input_path.stem}_test_q{current_q}.mkv"
+
+        test_cmd = build_encoder_args(
+            input_path=ref_sample,
+            output_path=test_encoded,
+            encoder=encoder,
+            codec=codec,
+            quality_value=current_q,
+            ai_choice="1",
+            use_nnedi=False,
+            denoise_mode=denoise_mode,
+            extra_args=noise_plan.get("extra_args", []),
+        )
+
+        logger.debug("Test-Encode Befehl (Versuch %d, Q=%d): %s", attempt, current_q, " ".join(test_cmd))
+        print(f"    -> Teste Durchlauf {attempt}/3 mit Qualitätsstufe Q={current_q}...")
+
+        try:
+            t_start = time.time()
+            run_command(test_cmd)
+            last_sample_duration = time.time() - t_start
+        except Exception as exc:
+            logger.warning("Test-Encode fehlgeschlagen für Q=%d: %s", current_q, exc)
+            break
+
+        print(f"    -> Messung VMAF-Score für Q={current_q}...")
+        vmaf_score = run_vmaf_score(
+            reference_path=ref_sample,
+            encoded_sample_path=test_encoded,
+            sample_start=0,
+            sample_duration=10,
+            ffmpeg_bin=Path(ffmpeg_vmaf_bin),
+        )
+
+        if vmaf_score <= 0.0:
+            logger.warning("VMAF-Messung liefert kein Ergebnis. Breche Kalibrierung ab.")
+            break
+
+        print(f"    -> Ergebnis Versuch {attempt}: Q={current_q} -> VMAF: {vmaf_score:.2f} (Ziel: {lower_bound:.1f} - {upper_bound:.1f})")
+
+        delta = abs(vmaf_score - target_vmaf)
+        if delta < min_delta:
+            min_delta = delta
+            best_q = current_q
+
+        if lower_bound <= vmaf_score <= upper_bound:
+            print(f"[OK] VMAF-Zielwert im Toleranzbereich getroffen bei Q={current_q}!")
+            return current_q, last_sample_duration
+
+        if vmaf_score > upper_bound:
+            current_q += 2
+        else:
+            current_q -= 2
+
+        current_q = max(14, min(current_q, 36))
+
+    print(f"[OK] Kalibrierung abgeschlossen. Optimaler Qualitätswert: Q={best_q}")
+    return best_q, last_sample_duration
 
 def has_forced_subtitles(subtitle_streams: List[Dict[str, Any]]) -> bool:
     """Prüft, ob erzwungene Untertitelspuren vorhanden sind."""

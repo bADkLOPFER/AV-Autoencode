@@ -30,8 +30,12 @@ def start_watcher(poll_interval: int = 5):
 
                     print(f"[>] Neue Datei erkannt: {file_path.name}. Prüfe Vollständigkeit...")
                     if is_file_ready(file_path):
-                        print(f"[✓] Datei bereit: {file_path.name}. Starte Transcoding-Pipeline...")
-                        process_job(file_path)
+                        print(f"[OK] Datei bereit: {file_path.name}. Starte Transcoding-Pipeline...")
+                        process_job(
+                            input_path=file_path,
+                            codec="av1"  # Nimmt automatisch AV1
+                        )
+                        logger.info(f"[OK] Transcoding-Pipeline abgeschlossen für: {file_path.name}")
                     else:
                         print(f"[...] Datei wird noch geschrieben: {file_path.name}")
         except Exception as err:

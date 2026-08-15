@@ -14,7 +14,7 @@ except ImportError:  # pragma: no cover
     from paths import PATHS
     from utils import HWProfile, detect_hardware, logger
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("omni_pipeline")
 
 def get_nvenc_base_args(codec: str = "hevc", qvbr: int = 22, extra_args: Optional[Sequence[str]] = None) -> list[str]:
     """Generiert die Basis-Argumente für NVEncC."""
@@ -38,7 +38,7 @@ def get_nvenc_base_args(codec: str = "hevc", qvbr: int = 22, extra_args: Optiona
         args.extend(extra_args)
     return args
 
-def get_ai_mode_args(ai_choice: str = "1", use_nnedi: bool = False) -> list[str]:
+def get_ai_mode_args(ai_choice: str = "2", use_nnedi: bool = False) -> list[str]:
     """Gibt die TensorRT / VPP Argumente je nach AI-Modus für NVEncC zurück."""
     if ai_choice == "2":
         return [
@@ -108,18 +108,16 @@ def map_denoise_to_filter(denoise_mode: str, encoder: str = "nvencc") -> Optiona
             "heavy": ["-vf", "hqdn3d=4:4:8:8"],
         }
         return ffmpeg_modes.get(mode)
-    
+
 def build_encoder_args(
     input_path: Path | str,
     output_path: Path | str,
     encoder: str = "ffmpeg",
-    codec: str = "hevc",
+    codec: str = "av1",
     quality_value: int = 22,
-    bitrate_mode: str = "cbr",  # Wieder aufgenommen, um main.py kompatibel zu halten
-    bitrate: int = 5000,        # Wieder aufgenommen
     audio_mode: str = "copy",
     subtitle_burn: bool = False,
-    ai_choice: str = "1",
+    ai_choice: str = "2",
     use_nnedi: bool = False,
     quality_metric: str = "vmaf",
     denoise_mode: str = "off",
@@ -137,7 +135,7 @@ def build_encoder_args(
 
         if quality_metric and quality_metric != "none":
             extra_list.append("--vmaf")
-            
+
         denoise_args = map_denoise_to_filter(denoise_mode, encoder="nvencc")
         if denoise_args:
             extra_list.extend(denoise_args)
@@ -145,10 +143,10 @@ def build_encoder_args(
         args = [str(nvencc_bin)]
         args.extend(get_nvenc_base_args(codec=codec, qvbr=quality_value, extra_args=extra_list))
         args.extend(get_ai_mode_args(ai_choice=ai_choice, use_nnedi=use_nnedi))
-        
+
         if subtitle_burn:
             args.extend(["--vpp-subburn", "track=1,forced_subs_only=on"])
-            
+
         args.extend(["--chapter-copy", "--audio-copy", "-i", str(input_path), "-o", str(output_path)])
         return args
 
@@ -159,7 +157,7 @@ def build_encoder_args(
 
         hw: HWProfile = detect_hardware(ffmpeg_bin)
         args = [str(ffmpeg_bin), "-hide_banner", "-loglevel", "info", "-y"]
-        
+
         if getattr(hw, "mode", "").lower() != "cpu" and hw.hwaccel_flag:
             args.extend(["-hwaccel", hw.hwaccel_flag])
 
@@ -170,7 +168,7 @@ def build_encoder_args(
         denoise_args = map_denoise_to_filter(denoise_mode, encoder="ffmpeg")
         if denoise_args:
             v_filters.append(denoise_args[1])
-            
+
         if subtitle_burn:
             escaped_path = input_path.as_posix().replace(":", r"\:")
             v_filters.append(f"subtitles='{escaped_path}':si=0")
@@ -199,7 +197,7 @@ def build_encoder_args(
 
         #if quality_metric and quality_metric != "none":
         #    extra_list.extend(["--metric", quality_metric]) if isinstance(quality_metric, str) else [] # safe append
-            
+
         args.extend(extra_list)
 
         # Audio & Ausgabe
@@ -254,57 +252,42 @@ def build_vmaf_check_cmd(
     return cmd
 
 
-def run_vmaf_score(
-    reference_path: Path,
-    encoded_sample_path: Path,
-    sample_start: int = 0,
-    sample_duration: int = 10,
-    ffmpeg_bin: Path = Path("ffmpeg_vmaf")
-) -> float:
-    """Führt den libvmaf-Vergleich durch, resetted Timestamps und erzwingt 10-Bit YUV."""
-    work_dir = Path(encoded_sample_path).parent
-    vmaf_json = work_dir / "vmaf_temp.json"
+def run_command(cmd: list[str], logger: logging.Logger | None = None) -> None:
+    if logger is None:
+        logger = logging.getLogger("omni_pipeline")
 
-    if vmaf_json.exists():
-        vmaf_json.unlink(missing_ok=True)
+    # Wir suchen nach dem FileHandler im Logger, um Encoder-Output direkt dort reinzuschreiben
+    file_handler = next((h for h in logger.handlers if isinstance(h, logging.FileHandler)), None)
 
-    # 2. Filter-String mit f-string und sauberem Relativpfad für den Work-Ordner
-    vmaf_filter = (
-        "[0:v]setpts=PTS-STARTPTS,format=yuv420p10le[ref];"
-        "[1:v]setpts=PTS-STARTPTS,format=yuv420p10le[dist];"
-        "[dist][ref]scale2ref[dist_sc][ref_sc];"
-        "[dist_sc][ref_sc]libvmaf=log_fmt=json:log_path=vmaf_temp.json:n_threads=4"
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        encoding="utf-8",
+        errors="replace"
     )
 
-    cmd = [
-        str(ffmpeg_bin), "-hide_banner", "-loglevel", "error", "-y",
-        "-i", str(reference_path),
-        "-i", str(encoded_sample_path),
-        "-filter_complex", vmaf_filter,
-        "-f", "null", "-"
-    ]
+    for line in iter(process.stdout.readline, ''):
+        if not line:
+            break
+        clean_line = line.strip()
+        if clean_line:
+            log_msg = f"[ENCODER] {clean_line}"
+            
+            # Falls ein FileHandler existiert, schreiben wir es NUR in die Datei
+            if file_handler:
+                record = logger.makeRecord(
+                    logger.name, logging.INFO, "encoding.py", 0, log_msg, (), None
+                )
+                file_handler.emit(record)
+            else:
+                # Fallback, falls kein Handler konfiguriert ist
+                logger.debug(log_msg)
 
-    try:
-        subprocess.run(cmd, cwd=str(work_dir), capture_output=True, text=True, check=True)
-        if vmaf_json.exists():
-            data = json.loads(vmaf_json.read_text(encoding="utf-8"))
-            vmaf_json.unlink(missing_ok=True)
-            return float(data["pooled_metrics"]["vmaf"]["mean"])
-    except Exception as err:
-        logger.error("Fehler bei der VMAF-Berechnung: %s", err)
-    
-    return 0.0
+    process.stdout.close()
+    return_code = process.wait()
 
-
-def run_command(cmd_args: Sequence[str | Path]) -> subprocess.CompletedProcess:
-    """Führt den Subprocess aus und fängt Standardfehler sauber ab."""
-    command = [str(item) for item in cmd_args]
-    logger.info("Starting process: %s", " ".join(command))
-
-    try:
-        return subprocess.run(command, capture_output=True, text=True, check=True)
-    except FileNotFoundError as exc:
-        raise FileNotFoundError(f"Executable could not be found: {command[0]}") from exc
-    except subprocess.CalledProcessError as exc:
-        stderr = (exc.stderr or "").strip() or str(exc)
-        raise RuntimeError(f"Command failed: {stderr}") from exc
+    if return_code != 0:
+        raise subprocess.CalledProcessError(return_code, cmd)
