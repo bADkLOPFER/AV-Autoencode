@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -446,44 +447,90 @@ def analyze_media(file_path: Path, ffprobe_path: Optional[str] = None) -> Dict[s
         "bitrate_info": bitrate_info,
     }
 
-def run_vmaf_score(
-    reference_path: Path,
-    encoded_sample_path: Path,
-    sample_start: int = 0,
-    sample_duration: int = 10,
-    ffmpeg_bin: Path = Path("ffmpeg_vmaf")
+
+def calculate_vmaf_score(
+    reference_sample: Path,
+    encoded_sample: Path,
+    vmaf_model_path: Optional[str] = None,
+    force_8bit: bool = True  # Garantiert identische Bit-Tiefe für VMAF
 ) -> float:
-    """Führt den libvmaf-Vergleich durch, resetted Timestamps und erzwingt 10-Bit YUV."""
-    work_dir = Path(encoded_sample_path).parent
-    vmaf_json = work_dir / "vmaf_temp.json"
+    """
+    Berechnet den VMAF-Score plattformunabhängig über das externe vmaf-CLI.
+    Konvertiert die Samples in temporäre Y4M-Dateien mit identischem Pixelformat.
+    """
+    vmaf_bin = str(PATHS.get("vmaf", "vmaf"))
+    ffmpeg_bin = str(PATHS.get("ffmpeg", "ffmpeg"))
 
-    if vmaf_json.exists():
-        vmaf_json.unlink(missing_ok=True)
+    ref_y4m = reference_sample.with_suffix(".y4m")
+    dist_y4m = encoded_sample.with_suffix(".y4m")
 
-    # 2. Filter-String mit f-string und sauberem Relativpfad für den Work-Ordner
-    vmaf_filter = (
-        "[0:v]setpts=PTS-STARTPTS,format=yuv420p10le[ref];"
-        "[1:v]setpts=PTS-STARTPTS,format=yuv420p10le[dist];"
-        "[dist][ref]scale2ref[dist_sc][ref_sc];"
-        "[dist_sc][ref_sc]libvmaf=log_fmt=json:log_path=vmaf_temp.json:n_threads=4"
-    )
-
-    cmd = [
-        str(ffmpeg_bin), "-hide_banner", "-loglevel", "error", "-y",
-        "-i", str(reference_path),
-        "-i", str(encoded_sample_path),
-        "-filter_complex", vmaf_filter,
-        "-f", "null", "-"
-    ]
+    # Erzwinge einheitliches Pixelformat (z. B. yuv420p), um "bitdepths do not match"-Fehler zu vermeiden
+    pix_fmt_args = ["-pix_fmt", "yuv420p"] if force_8bit else ["-strict", "-1"]
 
     try:
-        subprocess.run(cmd, cwd=str(work_dir), capture_output=True, text=True, check=True)
-        if vmaf_json.exists():
-            data = json.loads(vmaf_json.read_text(encoding="utf-8"))
-            vmaf_json.unlink(missing_ok=True)
-            return float(data["pooled_metrics"]["vmaf"]["mean"])
-    except Exception as err:
-        logger.error("Fehler bei der VMAF-Berechnung: %s", err)
+        # 1. Referenz-Sample in Y4M konvertieren
+        subprocess.run(
+            [
+                ffmpeg_bin,
+                "-hide_banner",
+                "-loglevel", "error",
+                "-y",
+                "-i", str(reference_sample),
+                *pix_fmt_args,
+                str(ref_y4m)
+            ],
+            check=True
+        )
+
+        # 2. Test-Encode (Distorted) in Y4M konvertieren
+        subprocess.run(
+            [
+                ffmpeg_bin,
+                "-hide_banner",
+                "-loglevel", "error",
+                "-y",
+                "-i", str(encoded_sample),
+                *pix_fmt_args,
+                str(dist_y4m)
+            ],
+            check=True
+        )
+
+        # Temporäre JSON-Datei für das Messergebnis
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp_file:
+            json_output_path = Path(tmp_file.name)
+
+        # 3. VMAF CLI aufrufen
+        cmd = [
+            vmaf_bin,
+            "-r", str(ref_y4m),
+            "-d", str(dist_y4m),
+            "-o", str(json_output_path),
+            "--json"
+        ]
+
+        if vmaf_model_path:
+            cmd.extend(["--model", f"path={vmaf_model_path}"])
+
+        subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+        # 4. JSON verarbeiten
+        if json_output_path.exists():
+            with open(json_output_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            json_output_path.unlink(missing_ok=True)
+            return round(float(data["pooled_metrics"]["vmaf"]["mean"]), 2)
+
+    except subprocess.CalledProcessError as e:
+        logger.error("VMAF CLI-Aufruf fehlgeschlagen: %s", e.stderr if hasattr(e, 'stderr') else e)
+    except Exception as e:
+        logger.error("Fehler bei der VMAF-Analyse: %s", e)
+    finally:
+        # Temporäre Y4M-Dateien im Work-Dir wieder aufräumen
+        if ref_y4m.exists():
+            ref_y4m.unlink(missing_ok=True)
+        if dist_y4m.exists():
+            dist_y4m.unlink(missing_ok=True)
 
     return 0.0
 
@@ -505,10 +552,6 @@ def calibrate_quality_vmaf(
     ensure_dir(work_dir)
 
     ffmpeg_bin = PATHS.get("ffmpeg", Path("ffmpeg"))
-    ffmpeg_vmaf_bin = ffmpeg_bin
-    if str(CONFIG.get("platform", "")).lower() not in ("windows", "win32"):
-        ffmpeg_vmaf_bin = PATHS.get("ffmpeg_vmaf", Path("ffmpeg_vmaf"))
-
     ref_sample = work_dir / f"{input_path.stem}_ref_peak_10s.mkv"
 
     cut_cmd = [
@@ -570,12 +613,11 @@ def calibrate_quality_vmaf(
             break
 
         print(f"    -> Messung VMAF-Score für Q={current_q}...")
-        vmaf_score = run_vmaf_score(
-            reference_path=ref_sample,
-            encoded_sample_path=test_encoded,
-            sample_start=0,
-            sample_duration=10,
-            ffmpeg_bin=Path(ffmpeg_vmaf_bin),
+        
+        # Aufruf des entkoppelten VMAF CLI Tools:
+        vmaf_score = calculate_vmaf_score(
+            reference_sample=ref_sample,
+            encoded_sample=test_encoded,
         )
 
         if vmaf_score <= 0.0:

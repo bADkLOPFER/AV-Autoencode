@@ -8,7 +8,10 @@ NVEncC/
 # ==========================================
 # Zielordner & Videodateien
 # ==========================================
-Results/
+Result/
+Done/
+Inbox/
+Work
 *.mkv
 *.mp4
 *.ts
@@ -28,6 +31,7 @@ tests/
 # Betriebssystem & IDE-Müll
 # ==========================================
 .DS_Store
+venv/
 Thumbs.db
 desktop.ini
 .vscode/

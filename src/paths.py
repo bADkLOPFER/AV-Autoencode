@@ -27,6 +27,14 @@ RESULT_DIR = PROJECT_ROOT / "Result"
 DONE_DIR = PROJECT_ROOT / "Done"
 CONFIG_DIR = PROJECT_ROOT / "config"
 
+def get_vmaf_path() -> Path:
+    if IS_WINDOWS:
+        # Pfad zu deiner vmaf.exe auf Windows
+        return PROJECT_ROOT / "VMAF" / "vmaf.exe"
+    else:
+        # Auf macOS / Linux liegt 'vmaf' meist im System-PATH (z. B. /opt/homebrew/bin/vmaf)
+        return Path("vmaf")
+
 def init_directories() -> None:
     """Erstellt alle benötigten Headless-Verzeichnisse."""
     for directory in [INBOX_DIR, WORK_DIR, RESULT_DIR, DONE_DIR, CONFIG_DIR]:
@@ -54,5 +62,7 @@ else:
         "nvencc": Path("/usr/local/bin/nvencc"),
         "results": RESULT_DIR,
     }
+
+PATHS["vmaf"] = get_vmaf_path()
 
 init_directories()

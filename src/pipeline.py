@@ -1,6 +1,6 @@
 # src/pipeline.py
 from __future__ import annotations
-
+from typing import Optional
 import json
 import logging
 import os
@@ -14,14 +14,16 @@ from pathlib import Path
 from paths import WORK_DIR, RESULT_DIR, DONE_DIR, INBOX_DIR
 from media_analysis import analyze_media, analyze_noise_and_quality, has_forced_subtitles, calibrate_quality_vmaf, recommend_quality_value
 from encoding import build_encoder_args, run_command
+from config import DEFAULT_ENCODER, resolve_encoder_choice
 
 
 def process_job(
     input_path: Path,
     codec: str = "av1",
-    encoder: str = "nvencc",
+    encoder: Optional[str] = None,
     quality: int = 22
 ) -> None:
+    encoder = resolve_encoder_choice(encoder)
     # 1. Eindeutige Job-ID erzeugen
     clean_stem = re.sub(r'[^\w\-_.]', '_', input_path.stem).strip('_')
     job_id = f"{clean_stem}_{uuid.uuid4().hex[:6]}"
