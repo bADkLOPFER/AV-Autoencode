@@ -1,305 +1,199 @@
-# server.py
 import asyncio
-import subprocess
-import sys
-import shutil
 import logging
-import os
-import json
+import shutil
 from pathlib import Path
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, File, Form, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.templating import Jinja2Templates
+from typing import Dict, Any, Optional
+
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from typing import List
 
-# Importe aus dem Projekt
-from paths import WORK_DIR, RESULT_DIR, PATHS
-
-# Importiere Defaults sicher
 try:
-    from config import DEFAULT_WEB_PORT, WORKFLOW_DEFAULTS
-except ImportError:
-    # Fallback, falls config.py nicht gefunden wird
-    DEFAULT_WEB_PORT = 8265
-    WORKFLOW_DEFAULTS = {
-        "default_codec": "av1", 
-        "default_true_hdr": True, 
-        "disk_space_multiplier": 1.5
-    }
+    from .config import CONFIG
+except ImportError:  # pragma: no cover
+    from config import CONFIG
 
-# --- CONFIG INIT ---
-default_hdr_string = "truehdr" if WORKFLOW_DEFAULTS.get("default_true_hdr", True) else "normal"
-INITIAL_CONFIG = {
-    "codecs": ["hevc", "av1"],
-    "hdr_modes": ["normal", "truehdr"],
-    "defaults": {
-        "codec": WORKFLOW_DEFAULTS.get("default_codec", "av1"),
-        "hdr_mode": default_hdr_string
-    }
+# Logger
+logger = logging.getLogger("omni_pipeline")
+
+app = FastAPI(title="Omni-Transcoder API", version="1.0")
+
+# CORS freischalten, damit das Frontend uneingeschränkt zugreifen kann
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Globaler Job-Status
+CURRENT_JOB: Dict[str, Any] = {
+    "running": False,
+    "filename": None,
+    "process": None
 }
 
-# --- SETUP ---
-logger = logging.getLogger(__name__)
-ACTIVE_PROCESS = None
-CANCEL_REQUESTED = False
-results_dir = PATHS.get("results", Path("Results"))
-WORK_DIR = results_dir / "Work"
-WORK_DIR.mkdir(parents=True, exist_ok=True)
-
-class ConnectionManager:
+# WebSocket Manager für Live-Logs
+class LogWebSocketManager:
     def __init__(self):
-        self.active_connections: List[WebSocket] = []
+        self.active_connections: list[WebSocket] = []
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
 
     def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
 
     async def broadcast(self, message: str):
-        for connection in self.active_connections:
-            await connection.send_text(message)
-
-manager = ConnectionManager()
-
-async def stream_and_broadcast(stream: asyncio.StreamReader):
-    try:
-        while True:
-            line = await stream.readline()
-            if not line:
-                break
-            
-            # Robustes Decodieren: Erst UTF-8 versuchen, bei Fehler auf cp1252 ausweichen
+        for connection in list(self.active_connections):
             try:
-                text = line.decode('utf-8').strip()
-            except UnicodeDecodeError:
-                text = line.decode('cp1252', errors='replace').strip()
-                
-            if text:
-                await manager.broadcast(text)
-    except Exception as e:
-        logger.error(f"Stream-Fehler: {e}")
+                await connection.send_text(message)
+            except Exception:
+                self.disconnect(connection)
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    yield
-    if ACTIVE_PROCESS:
-        ACTIVE_PROCESS.terminate()
+ws_manager = LogWebSocketManager()
 
-app = FastAPI(lifespan=lifespan)
-templates = Jinja2Templates(directory="templates")
 
-# --- ENDPUNKTE ---
-@app.get("/jobs")
-async def get_all_jobs():
-    """
-    Liest alle aktiven Jobs aus Work/ und alle abgeschlossenen aus Result/.
-    Stört keine bestehenden Routen und arbeitet rein lesend.
-    """
-    active_jobs = []
-    completed_jobs = []
+# Custom Logging Handler zur Umleitung aller omni_pipeline Logs an WebSockets
+class WebSocketLogHandler(logging.Handler):
+    def emit(self, record):
+        log_entry = self.format(record)
+        try:
+            loop = asyncio.get_running_loop()
+            if loop.is_running():
+                asyncio.create_task(ws_manager.broadcast(log_entry))
+        except RuntimeError:
+            pass
 
-    # 1. Aktive Jobs aus Work/ auslesen
-    if WORK_DIR.exists():
-        for job_file in WORK_DIR.glob("*.job.json"):
-            try:
-                data = json.loads(job_file.read_text(encoding="utf-8"))
-                active_jobs.append(data)
-            except Exception as err:
-                logger.warning(f"Konnte Job-Datei {job_file.name} nicht lesen: {err}")
+# Handler registrieren
+ws_handler = WebSocketLogHandler()
+ws_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
+logger.addHandler(ws_handler)
 
-    # 2. Abgeschlossene Jobs aus Result/ auslesen
-    if RESULT_DIR.exists():
-        for job_file in RESULT_DIR.glob("*.job.json"):
-            try:
-                data = json.loads(job_file.read_text(encoding="utf-8"))
-                completed_jobs.append(data)
-            except Exception as err:
-                logger.warning(f"Konnte Result-Datei {job_file.name} nicht lesen: {err}")
 
+# --- REST ENDPUNKTE ---
+
+@app.get("/config")
+async def get_config():
+    """Liefert die Standardkonfiguration für das Frontend."""
     return {
-        "status": "success",
-        "active": active_jobs,
-        "completed": completed_jobs
+        "default_codec": CONFIG.get("default_codec", "av1"),
+        "default_ai_choice": CONFIG.get("default_ai_choice", "2")
     }
+
+
+@app.get("/status")
+async def get_status():
+    """Statusabfrage nach Page-Reload (F5)."""
+    return {
+        "running": CURRENT_JOB["running"],
+        "filename": CURRENT_JOB["filename"]
+    }
+
+
+@app.post("/start-encode")
+async def start_encode(
+    file: UploadFile = File(...),
+    codec: str = Form("av1"),
+    hdr_mode: str = Form("2")
+):
+    """Nimmt Standard-Uploads entgegen und speichert sie direkt im Input-Ordner."""
+    if CURRENT_JOB["running"]:
+        raise HTTPException(status_code=400, detail="Es läuft bereits ein Transcoding-Prozess.")
+
+    input_dir = Path(CONFIG["input_dir"])
+    target_path = input_dir / file.filename
+
+    logger.info(f"Empfange Datei für Transcoding: {file.filename} (Codec: {codec}, AI-Choice: {hdr_mode})")
+
+    try:
+        with open(target_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        CURRENT_JOB["running"] = True
+        CURRENT_JOB["filename"] = file.filename
+        
+        logger.info(f"Datei erfolgreich im Input-Ordner abgelegt: {target_path}")
+        # Hier wird die eigentliche Pipeline asynchron angestoßen
+        return {"status": "started", "filename": file.filename}
+
+    except Exception as e:
+        logger.error(f"Fehler beim Speichern der Upload-Datei: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/upload-chunk")
 async def upload_chunk(
     file: UploadFile = File(...),
-    filename: str = Form(...),
-    chunkIndex: int = Form(...),
-    totalChunks: int = Form(...)
+    chunk_index: int = Form(...),
+    total_chunks: int = Form(...),
+    filename: str = Form(...)
 ):
-    save_path = WORK_DIR / filename
+    """Ermöglicht Chunked-Uploads für riesige Videodateien."""
+    temp_dir = Path(CONFIG["work_dir"]) / "chunks" / filename
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    chunk_file = temp_dir / f"chunk_{chunk_index:05d}"
     
-    # 'ab' = Append Binary (hängt Daten an, statt zu überschreiben)
-    with open(save_path, "ab") as f:
-        content = await file.read()
-        f.write(content)
-        
-    # Wenn letzter Chunk, Encoding starten
-    if chunkIndex == totalChunks - 1:
-        # Hier triggerst du dann dein start_encode mit dem fertigen Pfad
-        return {"status": "finished"}
-        
-    return {"status": "chunk_received"}
+    with open(chunk_file, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
 
-@app.get("/")
-async def read_root(request: Request):
-    return templates.TemplateResponse(request=request, name="index.html", context={"request": request})
+    logger.info(f"Chunk {chunk_index + 1}/{total_chunks} für {filename} empfangen.")
 
-@app.get("/config")
-async def get_config():
-    """Liefert die Konfiguration an das Frontend."""
-    return INITIAL_CONFIG
+    # Wenn alle Chunks da sind -> Zusammenfügen & in Input schieben
+    if len(list(temp_dir.glob("chunk_*"))) == total_chunks:
+        final_input_path = Path(CONFIG["input_dir"]) / filename
+        logger.info(f"Alle Chunks empfangen. Setze {filename} zusammen...")
 
-@app.websocket("/ws/logs")
-async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
-    try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        manager.disconnect(websocket)
+        with open(final_input_path, "wb") as outfile:
+            for i in range(total_chunks):
+                part_path = temp_dir / f"chunk_{i:05d}"
+                with open(part_path, "rb") as partfile:
+                    outfile.write(partfile.read())
 
-@app.post("/start-encode")
-async def start_encode(request: Request):
-    global ACTIVE_PROCESS, CANCEL_REQUESTED
-    CANCEL_REQUESTED = False  
-    
-    try:
-        form = await request.form()
-        uploaded_file: UploadFile = form.get("file")
-        codec = form.get("codec", "av1")
-        hdr_mode = form.get("hdr_mode", "normal")
-        
-        # Mapping von index.html (hdr_mode) auf main.py (ai_choice)
-        ai_choice = "2" if hdr_mode == "truehdr" else "1"
-        
-        if not uploaded_file:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Keine Datei übergeben."})
-    except Exception as e:
-        return JSONResponse(status_code=400, content={"status": "error", "message": f"Fehler beim Lesen des Requests: {e}"})
+        # Chunks aufräumen
+        shutil.rmtree(temp_dir)
+        logger.info(f"Datei {filename} vollständig zusammengesetzt und bereit für Processing.")
 
-    staged_file_path = WORK_DIR / f"{Path(uploaded_file.filename).stem}_uploaded{Path(uploaded_file.filename).suffix}"
-    
-    if staged_file_path.exists():
-        staged_file_path.unlink()
+    return {"status": "chunk_received", "chunk_index": chunk_index}
 
-    content_length = int(request.headers.get("content-length", 0))
-    file_size_gb = content_length / (1024**3) if content_length > 0 else 0
-    
-    if file_size_gb > 0:
-        free_space_gb = shutil.disk_usage(WORK_DIR.anchor).free / (1024**3)
-        if free_space_gb < (file_size_gb * WORKFLOW_DEFAULTS.get("disk_space_multiplier", 1.5)):
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Zu wenig Speicherplatz."})
-
-    # Datei kontrolliert in Blöcken speichern
-    try:
-        with open(staged_file_path, "wb") as buffer:
-            while True:
-                if CANCEL_REQUESTED:
-                    buffer.close()
-                    if staged_file_path.exists():
-                        staged_file_path.unlink()
-                    return JSONResponse(status_code=400, content={"status": "error", "message": "Upload abgebrochen."})
-                
-                chunk = await uploaded_file.read(1024 * 1024) 
-                if not chunk:
-                    break
-                buffer.write(chunk)
-    except Exception as e:
-        if staged_file_path.exists():
-            staged_file_path.unlink()
-        return JSONResponse(status_code=400, content={"status": "error", "message": f"Fehler beim Speichern der Datei: {e}"})
-
-    if CANCEL_REQUESTED or not staged_file_path.exists() or staged_file_path.stat().st_size == 0:
-        if staged_file_path.exists():
-            staged_file_path.unlink()
-        return JSONResponse(status_code=400, content={"status": "error", "message": "Job abgebrochen oder Datei leer."})
-
-    cmd = [
-        sys.executable, "-u", "main.py",
-        str(staged_file_path),
-        "--codec", codec,
-        "--ai-choice", ai_choice
-    ]
-
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
-    ACTIVE_PROCESS = proc
-
-    asyncio.create_task(stream_and_broadcast(proc.stdout))
-    asyncio.create_task(stream_and_broadcast(proc.stderr))
-
-    return {"status": "success", "message": "Encoding Prozess gestartet."}
-
-async def cleanup_work_dir():
-    """Löscht alle temporären Dateien und Ordner im Work-Verzeichnis."""
-    await asyncio.sleep(0.3)
-    try:
-        if WORK_DIR.exists():
-            for item in WORK_DIR.iterdir():
-                if item.is_file():
-                    item.unlink(missing_ok=True)
-                elif item.is_dir():
-                    shutil.rmtree(item, ignore_errors=True)
-            print("[OK] Arbeitsverzeichnis (Work-Dir) durch Server bereinigt.")
-    except Exception as e:
-        print(f"Fehler beim Bereinigen des Arbeitsverzeichnisses: {e}")
-
-@app.get("/status")
-async def get_status():
-    global ACTIVE_PROCESS
-    is_running = ACTIVE_PROCESS is not None and ACTIVE_PROCESS.returncode is None
-    return {"running": is_running}
 
 @app.post("/cancel-encode")
 async def cancel_encode():
-    global ACTIVE_PROCESS, CANCEL_REQUESTED
-    CANCEL_REQUESTED = True
-    
-    if ACTIVE_PROCESS is not None and ACTIVE_PROCESS.returncode is None:
-            pid = ACTIVE_PROCESS.pid
-            try:
-                if sys.platform == "win32":
-                    # Zwingt Windows dazu, den Prozess UND alle Kindprozesse (nvencc64, ffmpeg) sofort zu töten
-                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, check=True)
-                else:
-                    ACTIVE_PROCESS.terminate()
-                    await asyncio.wait_for(ACTIVE_PROCESS.wait(), timeout=3.0)
-            except Exception as e:
-                print(f"Fehler beim Killen des Prozesses: {e}")
-                try:
-                    ACTIVE_PROCESS.kill()
-                except:
-                    pass
-                    
-            ACTIVE_PROCESS = None
-            await cleanup_work_dir()
-            await manager.broadcast("[JOB_CANCELLED]")
-            return {"status": "success", "message": "Encoding-Prozess komplett abgebrochen."}
-    
-    # Falls kein Prozess aktiv war (z.B. während Upload)
-    await cleanup_work_dir()
-    await manager.broadcast("[JOB_CANCELLED]")
-    return {"status": "success", "message": "Vorbereitung / Upload abgebrochen."}
+    """Bricht das laufende Transcoding ab."""
+    if not CURRENT_JOB["running"]:
+        return {"status": "idle", "message": "Kein Job aktiv."}
 
-if __name__ == "__main__":
-    import uvicorn
-    # Erhöhe das Limit für die Request-Größe (hier auf 10GB = 10 * 1024 * 1024 * 1024)
-    # Damit wird der Parser nicht mehr bei großen Dateien vorzeitig abgebrochen.
-    uvicorn.run(
-        "server:app", 
-        host="0.0.0.0", 
-        port=DEFAULT_WEB_PORT, 
-        reload=False,
-        limit_concurrency=10,
-        # Das Limit hier ist entscheidend:
-        limit_max_requests=1000
-    )
+    logger.warning("Abbruchsignal vom Frontend empfangen!")
+    
+    # Prozess beenden falls vorhanden
+    if CURRENT_JOB.get("process"):
+        try:
+            CURRENT_JOB["process"].kill()
+        except Exception as e:
+            logger.error(f"Fehler beim Beenden des Prozesses: {e}")
+
+    CURRENT_JOB["running"] = False
+    CURRENT_JOB["filename"] = None
+    CURRENT_JOB["process"] = None
+
+    logger.info("Transcoding-Job erfolgreich abgebrochen.")
+    return {"status": "cancelled"}
+
+
+# --- WEBSOCKET FÜR LIVE-LOGS ---
+
+@app.websocket("/ws/logs")
+async def websocket_logs(websocket: WebSocket):
+    await ws_manager.connect(websocket)
+    logger.info("Web-Client hat sich mit dem Log-Stream verbunden.")
+    try:
+        while True:
+            # Verbindung aufrecht erhalten (Keep-alive)
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)
+        logger.info("Web-Client hat Log-Stream getrennt.")

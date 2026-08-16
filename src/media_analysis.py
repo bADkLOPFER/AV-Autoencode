@@ -10,12 +10,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
     from config import CONFIG
-    from .paths import WORK_DIR, PATHS
     from .encoding import build_encoder_args, run_command
     from .utils import _clamp, ensure_dir, logger
 except ImportError:  # pragma: no cover
     from config import CONFIG
-    from paths import WORK_DIR, PATHS
     from encoding import build_encoder_args, run_command
     from utils import _clamp, ensure_dir, logger
 
@@ -25,6 +23,7 @@ FFMPEG_BIN = CONFIG.get("tools", {}).get("ffmpeg", "ffmpeg")
 FFPROBE_BIN = CONFIG.get("tools", {}).get("ffprobe", "ffprobe")
 NVENCC_BIN = CONFIG.get("tools", {}).get("nvencc", "nvencc")
 VMAF_BIN = CONFIG.get("tools", {}).get("vmaf", "vmaf.exe")
+WORK_DIR = CONFIG["work_dir"]
 
 def _safe_float(val: Any, default: float = 0.0) -> float:
     """Konvertiert Werte sicher in float (fängt 'N/A' ab)."""
@@ -354,8 +353,8 @@ def analyze_noise_and_quality(
     """Führt eine Multi-Point Kompressions-Delta-Analyse (33%, 66%, Peak) durch."""
     if logger is None:
         logger = logging.getLogger("omni_pipeline")
-    ffmpeg_bin = Path(ffmpeg_path) if ffmpeg_path else PATHS.get("ffmpeg", Path("ffmpeg"))
-    ffprobe_bin = Path(ffprobe_path) if ffprobe_path else PATHS.get("ffprobe", Path("ffprobe"))
+    ffmpeg_bin = Path(ffmpeg_path) if ffmpeg_path else FFMPEG_BIN
+    ffprobe_bin = Path(ffprobe_path) if ffprobe_path else FFPROBE_BIN
     target_work_dir = Path(work_dir) if work_dir else WORK_DIR
 
     if not bitrate_info:
@@ -418,7 +417,7 @@ def analyze_noise_and_quality(
 
 def analyze_media(file_path: Path, ffprobe_path: Optional[str] = None) -> Dict[str, Any]:
     """Analysiert Streams, Auflösung und Bitraten der Mediendatei."""
-    ffprobe_bin = Path(ffprobe_path) if ffprobe_path else PATHS.get("ffprobe", Path("ffprobe"))
+    ffprobe_bin = Path(ffprobe_path) if ffprobe_path else FFPROBE_BIN
 
     cmd = [
         str(ffprobe_bin),
@@ -462,8 +461,8 @@ def calculate_vmaf_score(
     Berechnet den VMAF-Score plattformunabhängig über das externe vmaf-CLI.
     Konvertiert die Samples in temporäre Y4M-Dateien mit identischem Pixelformat.
     """
-    vmaf_bin = str(PATHS.get("vmaf", "vmaf"))
-    ffmpeg_bin = str(PATHS.get("ffmpeg", "ffmpeg"))
+    vmaf_bin = str(VMAF_BIN)
+    ffmpeg_bin = str(FFMPEG_BIN)
 
     ref_y4m = reference_sample.with_suffix(".y4m")
     dist_y4m = encoded_sample.with_suffix(".y4m")
@@ -555,7 +554,7 @@ def calibrate_quality_vmaf(
     
     ensure_dir(work_dir)
 
-    ffmpeg_bin = PATHS.get("ffmpeg", Path("ffmpeg"))
+    ffmpeg_bin = FFMPEG_BIN
     ref_sample = work_dir / f"{input_path.stem}_ref_peak_10s.mkv"
 
     cut_cmd = [

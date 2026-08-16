@@ -11,12 +11,13 @@ from typing import Optional, List, Union, Set
 import sys
 
 try:
-    from .paths import PATHS
+    from .config import CONFIG
 except ImportError: 
-    from paths import PATHS
+    from config import CONFIG
 
-logger = logging.getLogger("video_tool")
+logger = logging.getLogger("omni_pipeline")
 
+FFMPEG_BIN = CONFIG.get("tools", {}).get("ffmpeg", "ffmpeg")
 
 def _clamp(value: float, min_val: float, max_val: float) -> float:
     """Begrenzt einen Wert auf den Bereich [min_val, max_val]."""
@@ -38,7 +39,7 @@ def detect_hardware(ffmpeg_bin: Optional[str | Path] = None) -> HWProfile:
     oder fällt sauber auf den CPU-Modus (SVT-AV1 / libx264) zurück.
     """
     if ffmpeg_bin is None:
-        ffmpeg_str = str(PATHS.get("ffmpeg", "ffmpeg"))
+        ffmpeg_str = str(FFMPEG_BIN)
     else:
         ffmpeg_str = str(ffmpeg_bin)
 
@@ -179,10 +180,11 @@ def ensure_dir(path: Union[str, Path]) -> Path:
     path_obj.mkdir(parents=True, exist_ok=True)
     return path_obj
 
-def calculate_adjusted_speed_factor(test_speed_factor: float, ai_choice: str) -> float:
+def calculate_adjusted_speed_factor(test_speed_factor: float, ai_choice: str = "none") -> float:
     """
     Berechnet den finalen Geschwindigkeitsfaktor unter Berücksichtigung von 
     Test-Speed, AI/Filter-Option und der zugrundeliegenden Hardware-Architektur.
+    Dient der genauen Hochrechnung der verbleibenden Restzeit (ETA) im Frontend.
     """
     hw_profile = detect_hardware()
 
@@ -197,7 +199,7 @@ def calculate_adjusted_speed_factor(test_speed_factor: float, ai_choice: str) ->
     
     hw_factor = hw_multipliers.get(hw_profile.name.lower(), 1.0)
     
-    # 2. Dämpfungsfaktor durch gewählte AI-Modi / Zusatzfilter (z.B. nnedi, truehdr)
+    # 2. Dämpfungsfaktor durch gewählte AI-Modi / Zusatzfilter
     ai_penalties = {
         "none": 1.0,
         "light": 0.90,
@@ -211,8 +213,8 @@ def calculate_adjusted_speed_factor(test_speed_factor: float, ai_choice: str) ->
     # 3. Zusammenführung der Faktoren mit dem gemessenen Test-Speed
     adjusted_factor = test_speed_factor * hw_factor * ai_factor
     
-    # Schutz vor unrealistischen oder Null-Werten
-    return max(adjusted_factor, 0.01)
+    # Sicherheitsgrenzen: Mindestens 0.05x Speed, maximal 50x Speed
+    return _clamp(adjusted_factor, 0.05, 50.0)
 
 def estimate_total_duration(source_duration_seconds: float, adjusted_speed_factor: float) -> float:
     """

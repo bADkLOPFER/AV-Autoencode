@@ -1,19 +1,17 @@
 from __future__ import annotations
 
 import logging
-import json
-import re
 import subprocess
 from pathlib import Path
 from typing import Optional, Sequence, Any, Dict, List
-from config import CONFIG, IS_MACOS
+
 
 try:
-    from .paths import PATHS
-    from .utils import HWProfile, detect_hardware, logger
+    from .utils import HWProfile, detect_hardware
+    from .config import CONFIG, IS_MACOS
 except ImportError:  # pragma: no cover
-    from paths import PATHS
-    from utils import HWProfile, detect_hardware, logger
+    from utils import HWProfile, detect_hardware
+    from config import CONFIG, IS_MACOS
 
 logger = logging.getLogger("omni_pipeline")
 

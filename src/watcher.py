@@ -1,10 +1,15 @@
 import time
 import logging
 from pathlib import Path
-from paths import INBOX_DIR, init_directories
-from pipeline import process_job
 
-logger = logging.getLogger("omni_watcher")
+try:
+    from .config import CONFIG
+    from .pipeline import process_job
+except ImportError:  # pragma: no cover
+    from config import CONFIG
+    from pipeline import process_job
+
+logger = logging.getLogger("omni_pipeline")
 VALID_EXTENSIONS = {".mkv", ".mp4", ".mov", ".avi", ".m2ts"}
 
 def is_file_ready(file_path: Path, check_interval: int = 3) -> bool:
@@ -18,7 +23,7 @@ def is_file_ready(file_path: Path, check_interval: int = 3) -> bool:
         return False
 
 def start_watcher(poll_interval: int = 5):
-    init_directories()
+    INBOX_DIR = Path(CONFIG["inbox_dir"])
     print(f"[+] Watcher gestartet. Überwache: {INBOX_DIR}")
 
     while True:

@@ -7,14 +7,22 @@ import os
 import shutil
 import time
 import uuid
-import sys
 import re
 from pathlib import Path
 
-from paths import WORK_DIR, RESULT_DIR, DONE_DIR, INBOX_DIR
-from media_analysis import analyze_media, analyze_noise_and_quality, has_forced_subtitles, calibrate_quality_vmaf, recommend_quality_value
-from encoding import build_encoder_args, run_command
-from config import DEFAULT_ENCODER, resolve_encoder_choice
+try:
+    from .config import CONFIG
+    from .media_analysis import analyze_media, analyze_noise_and_quality, has_forced_subtitles, calibrate_quality_vmaf, recommend_quality_value
+    from .encoding import build_encoder_args, run_command
+except ImportError:  # pragma: no cover
+    from media_analysis import analyze_media, analyze_noise_and_quality, has_forced_subtitles, calibrate_quality_vmaf, recommend_quality_value
+    from encoding import build_encoder_args, run_command
+    from config import CONFIG, resolve_encoder_choice
+
+WORK_DIR = Path(CONFIG["work_dir"])
+RESULT_DIR = Path(CONFIG["result_dir"])
+DONE_DIR = Path(CONFIG["done_dir"])
+INBOX_DIR = Path(CONFIG["inbox_dir"])
 
 
 def process_job(
