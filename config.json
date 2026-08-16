@@ -1,10 +1,10 @@
 {
-  "base_dir": "./",
+  "base_dir": "C:\\Users\\webma\\Downloads\\AV-Encode",
   "tools": {
-    "ffmpeg": "ffmpeg",
-    "ffprobe": "ffprobe",
-    "nvencc": "nvencc",
-    "vmaf": "vmaf"
+    "ffmpeg": "C:\\Users\\webma\\Downloads\\AV-Encode\\FFMPeg\\ffmpeg.exe",
+    "ffprobe": "C:\\Users\\webma\\Downloads\\AV-Encode\\FFMPeg\\ffprobe.exe",
+    "nvencc": "C:\\Users\\webma\\Downloads\\AV-Encode\\NVEncC\\nvencc64.exe",
+    "vmaf": "C:\\Users\\webma\\Downloads\\AV-Encode\\VMAF\\vmaf.exe"
   },
   "default_codec": "av1",
   "default_ai_choice": "2"

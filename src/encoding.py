@@ -8,17 +8,17 @@ from typing import Optional, Sequence, Any, Dict, List
 
 try:
     from .utils import HWProfile, detect_hardware
-    from .config import CONFIG, IS_MACOS
+    from .config import CONFIG, IS_MACOS, IS_WINDOWS
 except ImportError:  # pragma: no cover
     from utils import HWProfile, detect_hardware
-    from config import CONFIG, IS_MACOS
+    from config import CONFIG, IS_MACOS, IS_WINDOWS
 
 logger = logging.getLogger("omni_pipeline")
 
 FFMPEG_BIN = CONFIG.get("tools", {}).get("ffmpeg", "ffmpeg")
 FFPROBE_BIN = CONFIG.get("tools", {}).get("ffprobe", "ffprobe")
-NVENCC_BIN = CONFIG.get("tools", {}).get("nvencc", "nvencc")
-VMAF_BIN = CONFIG.get("tools", {}).get("vmaf", "vmaf.exe")
+NVENCC_BIN = CONFIG.get("tools", {}).get("nvencc") or ("nvencc64.exe" if IS_WINDOWS else "nvencc")
+VMAF_BIN = CONFIG.get("tools", {}).get("vmaf", "vmaf.exe" if IS_WINDOWS else "vmaf")
 
 def get_nvenc_base_args(codec: str = "hevc", qvbr: int = 22, extra_args: Optional[Sequence[str]] = None) -> list[str]:
     """Generiert die Basis-Argumente für NVEncC."""
@@ -181,12 +181,12 @@ def build_encoder_args(
         ai_choice = str(CONFIG.get("default_ai_choice", "2"))
 
     # --- NVEncC PFAD ---
-    if encoder_clean in ("nvencc", "nvenc"):
+    if encoder_clean in ("nvencc", "nvenc", "nvencc64"):
         base_args = get_nvenc_base_args(codec=codec, qvbr=quality_value, extra_args=extra_args)
         ai_args = get_ai_mode_args_nvencc(ai_choice=ai_choice, use_nnedi=use_nnedi)
         
         cmd = [
-            "nvencc",
+            NVENCC_BIN,
             "-i", str(input_path),
             *base_args,
             *ai_args,

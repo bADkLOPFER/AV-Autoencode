@@ -9,11 +9,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
-    from config import CONFIG
+    from config import CONFIG, IS_WINDOWS
     from .encoding import build_encoder_args, run_command
     from .utils import _clamp, ensure_dir, logger
 except ImportError:  # pragma: no cover
-    from config import CONFIG
+    from config import CONFIG, IS_WINDOWS
     from encoding import build_encoder_args, run_command
     from utils import _clamp, ensure_dir, logger
 
@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 
 FFMPEG_BIN = CONFIG.get("tools", {}).get("ffmpeg", "ffmpeg")
 FFPROBE_BIN = CONFIG.get("tools", {}).get("ffprobe", "ffprobe")
-NVENCC_BIN = CONFIG.get("tools", {}).get("nvencc", "nvencc")
-VMAF_BIN = CONFIG.get("tools", {}).get("vmaf", "vmaf.exe")
+NVENCC_BIN = CONFIG.get("tools", {}).get("nvencc") or ("nvencc64.exe" if IS_WINDOWS else "nvencc")
+VMAF_BIN = CONFIG.get("tools", {}).get("vmaf", "vmaf.exe" if IS_WINDOWS else "vmaf")
 WORK_DIR = CONFIG["work_dir"]
 
 def _safe_float(val: Any, default: float = 0.0) -> float:

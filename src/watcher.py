@@ -1,4 +1,5 @@
 import time
+
 import logging
 from pathlib import Path
 
@@ -11,6 +12,7 @@ except ImportError:  # pragma: no cover
 
 logger = logging.getLogger("omni_pipeline")
 VALID_EXTENSIONS = {".mkv", ".mp4", ".mov", ".avi", ".m2ts"}
+
 
 def is_file_ready(file_path: Path, check_interval: int = 3) -> bool:
     """Stellt sicher, dass der Kopiervorgang in Inbox/ abgeschlossen ist."""

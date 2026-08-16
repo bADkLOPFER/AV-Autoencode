@@ -17,6 +17,7 @@ Work
 *.ts
 *.m2ts
 *.avi
+*.json
 
 # ==========================================
 # Temporäre Dateien & VMAF-Logs
