@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
-    from .config import CONFIG
+    from config import CONFIG
     from .paths import WORK_DIR, PATHS
     from .encoding import build_encoder_args, run_command
     from .utils import _clamp, ensure_dir, logger
@@ -21,6 +21,10 @@ except ImportError:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 
+FFMPEG_BIN = CONFIG.get("tools", {}).get("ffmpeg", "ffmpeg")
+FFPROBE_BIN = CONFIG.get("tools", {}).get("ffprobe", "ffprobe")
+NVENCC_BIN = CONFIG.get("tools", {}).get("nvencc", "nvencc")
+VMAF_BIN = CONFIG.get("tools", {}).get("vmaf", "vmaf.exe")
 
 def _safe_float(val: Any, default: float = 0.0) -> float:
     """Konvertiert Werte sicher in float (fängt 'N/A' ab)."""
@@ -595,10 +599,7 @@ def calibrate_quality_vmaf(
             encoder=encoder,
             codec=codec,
             quality_value=current_q,
-            ai_choice="1",
-            use_nnedi=False,
-            denoise_mode=denoise_mode,
-            extra_args=noise_plan.get("extra_args", []),
+            is_preflight=True
         )
 
         logger.debug("Test-Encode Befehl (Versuch %d, Q=%d): %s", attempt, current_q, " ".join(test_cmd))

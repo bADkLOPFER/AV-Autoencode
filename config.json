@@ -1,0 +1,11 @@
+{
+  "base_dir": "/Users/sseidler/Git/AV-Autoencode",
+  "tools": {
+    "ffmpeg": "ffmpeg",
+    "ffprobe": "ffprobe",
+    "nvencc": "nvencc",
+    "vmaf": "vmaf.exe"
+  },
+  "default_codec": "av1",
+  "default_ai_choice": "2"
+}
