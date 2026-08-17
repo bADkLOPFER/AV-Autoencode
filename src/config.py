@@ -28,6 +28,8 @@ def detect_platform() -> str:
 
 
 PLATFORM = detect_platform()
+PLATFORM_NAME = PLATFORM.upper()
+
 IS_WINDOWS = PLATFORM == "windows"
 IS_MACOS = PLATFORM == "macos"
 IS_LINUX = PLATFORM == "linux"
@@ -35,77 +37,83 @@ IS_LINUX = PLATFORM == "linux"
 DEFAULT_ENCODER = "nvencc64" if IS_WINDOWS else "ffmpeg"
 ENCODER_CHOICES = ("ffmpeg", "nvencc", "nvencc64")
 DEFAULT_WEB_PORT = 8265
-
-# VMAF-Standardwert abhängig vom Betriebssystem
 DEFAULT_VMAF_BIN = "vmaf.exe" if IS_WINDOWS else "vmaf"
 
-# 2. Standard-Konfiguration definieren
+
+# 2. Hilfsfunktionen zur Konfiguration
+def _ensure_exe(path_str: str) -> str:
+    """Stellt sicher, dass ein Pfad unter Windows auf .exe endet."""
+    if IS_WINDOWS and not path_str.lower().endswith(".exe"):
+        return f"{path_str}.exe"
+    return path_str
+
+
+def resolve_encoder_choice(requested: Optional[str]) -> str:
+    """Ermittelt den zu nutzenden Encoder mit Fallback."""
+    if requested is None:
+        return DEFAULT_ENCODER
+
+    normalized = requested.lower()
+    if normalized not in ENCODER_CHOICES:
+        logger.warning(
+            f"Ungültiger Encoder '{requested}'. Erlaubt sind: {ENCODER_CHOICES}. Fallback auf '{DEFAULT_ENCODER}'."
+        )
+        return DEFAULT_ENCODER
+
+    return normalized
+
+
 def get_default_config() -> Dict[str, Any]:
+    """Erzeugt die plattformspezifische Standard-Konfiguration."""
+    ext = ".exe" if IS_WINDOWS else ""
+
     return {
+        "_comment_windows_paths": (
+            "BEISPIELE (Windows): Absoluter Pfad -> 'C:/Tools/ffmpeg/bin/ffmpeg.exe' | "
+            "Relativer Pfad -> './bin/nvencc64.exe' | System-PATH -> 'ffmpeg.exe'"
+        ),
+        "_comment_linux_paths": (
+            "BEISPIELE (Linux/macOS): Absoluter Pfad -> '/usr/bin/ffmpeg' | "
+            "Relativer Pfad -> './bin/ffmpeg' | System-PATH -> 'ffmpeg'"
+        ),
         "base_dir": "./",
         "tools": {
-            "ffmpeg": "ffmpeg",
-            "ffprobe": "ffprobe",
-            # Auf Linux/macOS 'nvencc' oder weglassen, auf Windows 'nvencc64' bzw. 'nvencc'
-            "nvencc": "nvencc64" if IS_WINDOWS else "nvencc",
-            "vmaf": "vmaf.exe" if IS_WINDOWS else "vmaf",
+            "ffmpeg": f"ffmpeg{ext}",
+            "ffprobe": f"ffprobe{ext}",
+            "nvencc": f"nvencc64{ext}" if IS_WINDOWS else "nvencc",
+            "vmaf": f"vmaf{ext}",
         },
-        "default_encoder": DEFAULT_ENCODER, # dynamisch: 'nvencc64' (Win) vs 'ffmpeg' (Linux)
+        "default_encoder": _ensure_exe(DEFAULT_ENCODER) if IS_WINDOWS else DEFAULT_ENCODER,
         "default_codec": "av1",
         "default_ai_choice": "2",
     }
 
-def verify_tools(config: Dict[str, Any]) -> bool:
-    """
-    Überprüft, ob alle in der config.json konfigurierten Tools
-    auf dem aktuellen Betriebssystem existieren und lauffähig sind.
-    """
-    tools = config.get("tools", {})
-    all_valid = True
 
-    logger.info("Starte Überprüfung der Encoding-Tools...")
-
-    for tool_name, tool_path in tools.items():
-        # 1. Prüfen, ob es ein expliziter Pfad (absolut oder mit Slashes) ist
-        if Path(tool_path).is_absolute() or "\\" in tool_path or "/" in tool_path:
-            if not Path(tool_path).exists():
-                logger.error(f"❌ Tool '{tool_name}' nicht gefunden unter Pfad: {tool_path}")
-                all_valid = False
-            else:
-                logger.info(f"✓ Tool '{tool_name}' gefunden: {tool_path}")
-        else:
-            # 2. Ansonsten im System-PATH suchen (z.B. für globale Installationen oder 'vmaf.exe')
-            resolved_path = shutil.which(tool_path)
-            if not resolved_path:
-                logger.error(f"❌ Tool '{tool_name}' ('{tool_path}') weder als Pfad noch im System-PATH gefunden!")
-                all_valid = False
-            else:
-                logger.info(f"✓ Tool '{tool_name}' im System gefunden: {resolved_path}")
-
-    return all_valid
-
-# 3. Funktionen zum Laden und Speichern
-def save_config(config_data: Dict[str, Any], config_file: Path = CONFIG_PATH) -> None:
+def save_config(config: Dict[str, Any], config_path: Path = CONFIG_PATH) -> None:
+    """Speichert das Konfigurations-Dict als formatiertes JSON ab."""
     try:
-        config_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(config_file, "w", encoding="utf-8") as f:
-            json.dump(config_data, f, indent=2, ensure_ascii=False)
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=4, ensure_ascii=False)
+        logger.info(f"Standard-Konfiguration in '{config_path.name}' gespeichert.")
     except Exception as e:
-        logger.error(f"Fehler beim Speichern der Konfiguration: {e}")
+        logger.error(f"Fehler beim Speichern der Konfiguration in '{config_path.name}': {e}")
 
 
 def load_config(config_file: Path = CONFIG_PATH) -> Dict[str, Any]:
+    """Lädt die Konfiguration aus config.json oder erzeugt Standardwerte."""
+    default_cfg = get_default_config()
+
     if not config_file.exists():
-        logger.info(f"Keine config.json gefunden. Erstelle Standard-Konfiguration unter {config_file}")
-        default_cfg = get_default_config()
+        logger.info(f"Keine '{config_file.name}' gefunden. Erstelle Defaults für {PLATFORM_NAME}...")
         save_config(default_cfg, config_file)
-        config = default_cfg()
+        config = default_cfg
     else:
         try:
             with open(config_file, "r", encoding="utf-8") as f:
                 config = json.load(f)
+                logger.info(f"Konfiguration aus '{config_file.name}' geladen.")
         except Exception as e:
-            logger.error(f"Fehler beim Laden von {config_file}: {e}. Verwende Standardwerte.")
+            logger.error(f"Fehler beim Laden von {config_file.name}: {e}. Verwende Standardwerte.")
             config = default_cfg.copy()
 
     # Automatische Ableitung der Ordnerstrukturen aus base_dir
@@ -119,26 +127,49 @@ def load_config(config_file: Path = CONFIG_PATH) -> Dict[str, Any]:
     for key in ["inbox_dir", "work_dir", "result_dir", "done_dir"]:
         Path(config[key]).mkdir(parents=True, exist_ok=True)
 
+    # Sicherstellen, dass unter Windows alle Tool-Pfade .exe besitzen
+    if IS_WINDOWS and "tools" in config:
+        for tool_key, tool_path in config["tools"].items():
+            config["tools"][tool_key] = _ensure_exe(tool_path)
+
     return config
 
 
-# 4. Globales Config-Objekt NACH allen Definitionen initialisieren
+def verify_tools(config: Dict[str, Any]) -> bool:
+    """Überprüft die Verfügbarkeit der konfigurierten Tools auf dem System."""
+    tools = config.get("tools", {})
+    all_valid = True
+
+    logger.info(f"Starte Validierung der Werkzeuge für Betriebssystem: {PLATFORM_NAME}...")
+
+    for tool_name, tool_path in tools.items():
+        executable_path = _ensure_exe(tool_path)
+        path_obj = Path(executable_path)
+        resolved_path = None
+
+        if path_obj.is_absolute() or "/" in executable_path or "\\" in executable_path:
+            if path_obj.exists():
+                resolved_path = str(path_obj.resolve())
+        else:
+            found = shutil.which(executable_path)
+            if found:
+                resolved_path = found
+
+        if resolved_path:
+            logger.info(f"  ✓ Tool '{tool_name}' gefunden: {resolved_path}")
+        else:
+            is_optional = (tool_name == "nvencc" and not IS_WINDOWS)
+            if is_optional:
+                logger.warning(f"  ⚠️ Optionales Tool '{tool_name}' auf {PLATFORM_NAME} nicht gefunden.")
+            else:
+                logger.error(f"  ❌ Kritisches Tool '{tool_name}' ('{executable_path}') fehlt!")
+                all_valid = False
+
+    return all_valid
+
+
+# =========================================================================
+# 3. INITIALISIERUNG AM ENDE DER DATEI
+# Alle Funktionen sind nun definiert, bevor CONFIG und die Exporte erzeugt werden.
+# =========================================================================
 CONFIG = load_config()
-
-if not verify_tools(CONFIG):
-    logger.critical("Kritischer Fehler: Mindestens ein Encoding-Tool fehlt oder ist falsch konfiguriert!")
-    # Optional: Den Start hier hart abbrechen, damit keine fehlerhaften Jobs starten
-    sys.exit(1)
-
-def resolve_encoder_choice(requested: Optional[str]) -> str:
-    if requested is None:
-        return DEFAULT_ENCODER
-
-    normalized = requested.lower()
-    if normalized not in ENCODER_CHOICES:
-        raise ValueError(f"Unsupported encoder '{requested}'. Expected one of {ENCODER_CHOICES}.")
-
-    if normalized == "nvencc" and not IS_WINDOWS:
-        raise ValueError("NVEncC is only supported on Windows. Please use ffmpeg on macOS or Linux.")
-
-    return normalized

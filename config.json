@@ -1,11 +1,14 @@
 {
-  "base_dir": "C:\\Users\\webma\\Downloads\\AV-Encode",
-  "tools": {
-    "ffmpeg": "C:\\Users\\webma\\Downloads\\AV-Encode\\FFMPeg\\ffmpeg.exe",
-    "ffprobe": "C:\\Users\\webma\\Downloads\\AV-Encode\\FFMPeg\\ffprobe.exe",
-    "nvencc": "C:\\Users\\webma\\Downloads\\AV-Encode\\NVEncC\\nvencc64.exe",
-    "vmaf": "C:\\Users\\webma\\Downloads\\AV-Encode\\VMAF\\vmaf.exe"
-  },
-  "default_codec": "av1",
-  "default_ai_choice": "2"
+    "_comment_windows_paths": "BEISPIELE (Windows): Absoluter Pfad -> 'C:/Tools/ffmpeg/bin/ffmpeg.exe' | Relativer Pfad -> './bin/nvencc64.exe' | System-PATH -> 'ffmpeg.exe'",
+    "_comment_linux_paths": "BEISPIELE (Linux/macOS): Absoluter Pfad -> '/usr/bin/ffmpeg' | Relativer Pfad -> './bin/ffmpeg' | System-PATH -> 'ffmpeg'",
+    "base_dir": "./",
+    "tools": {
+        "ffmpeg": "./FFMPEG/ffmpeg.exe",
+        "ffprobe": "./FFMPEG/ffprobe.exe",
+        "nvencc": "./NVEncC/nvencc64.exe",
+        "vmaf": "./VMAF/vmaf.exe"
+    },
+    "default_encoder": "nvencc64.exe",
+    "default_codec": "av1",
+    "default_ai_choice": "2"
 }

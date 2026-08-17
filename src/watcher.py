@@ -1,18 +1,27 @@
 import time
-
+import sys
 import logging
 from pathlib import Path
 
+sys.path.append(str(Path(__file__).parent))
+
 try:
-    from .config import CONFIG
+    from .config import load_config, verify_tools
     from .pipeline import process_job
 except ImportError:  # pragma: no cover
-    from config import CONFIG
+    from config import load_config, verify_tools
     from pipeline import process_job
 
 logger = logging.getLogger("omni_pipeline")
 VALID_EXTENSIONS = {".mkv", ".mp4", ".mov", ".avi", ".m2ts"}
 
+
+# Konfiguration laden & Tools prüfen
+CONFIG = load_config()
+
+if not verify_tools(CONFIG):
+    print("❌ Fehler: Tool-Validierung fehlgeschlagen!")
+    sys.exit(1)
 
 def is_file_ready(file_path: Path, check_interval: int = 3) -> bool:
     """Stellt sicher, dass der Kopiervorgang in Inbox/ abgeschlossen ist."""

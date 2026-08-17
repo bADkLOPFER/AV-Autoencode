@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 
 try:
-    from .config import CONFIG
+    from .config import CONFIG, resolve_encoder_choice
     from .media_analysis import analyze_media, analyze_noise_and_quality, has_forced_subtitles, calibrate_quality_vmaf, recommend_quality_value
     from .encoding import build_encoder_args, run_command
 except ImportError:  # pragma: no cover
