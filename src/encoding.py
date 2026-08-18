@@ -28,14 +28,14 @@ def get_nvenc_base_args(codec: str = "hevc", qvbr: int = 22, extra_args: Optiona
             "--level", "5.1", "--qvbr", str(qvbr), "--output-depth", "10",
             "--preset", "P7", "--multipass", "2pass-full", "--lookahead", "32",
             "--lookahead-level", "3", "--aq", "--aq-temporal", "--ref", "4",
-            "--bframes", "4", "--bref-mode", "middle", "--pic-struct",
+            "--bframes", "4", "--bref-mode", "middle", "--pic-struct", "--audio-copy", "--chapter-copy",
         ]
     else:
         args = [
             "--avhw", "--codec", "av1", "--profile", "main", "--qvbr", str(qvbr),
             "--output-depth", "10", "--preset", "P7", "--multipass", "2pass-full",
             "--lookahead", "32", "--lookahead-level", "3", "--aq", "--aq-temporal",
-            "--ref", "4", "--bframes", "4", "--bref-mode", "middle", "--pic-struct",
+            "--ref", "4", "--bframes", "4", "--bref-mode", "middle", "--pic-struct", "--audio-copy", "--chapter-copy",
         ]
 
     if extra_args:
@@ -132,10 +132,10 @@ def _sanitize_extra_args(encoder: str, extra_args: Optional[Sequence[str]] = Non
 
 def map_denoise_to_filter(denoise_mode: str, encoder: str = "nvencc") -> Optional[List[str]]:
     """Gibt die passenden Denoise-Argumente für den jeweiligen Encoder zurück.
-    Bei 'light' oder 'off' wird None zurückgegeben (kein Filter-Overlay).
+    Bei 'off' wird None zurückgegeben (kein Filter-Overlay).
     """
     if not denoise_mode or denoise_mode.lower() in {"off", "none"}:
-        return None
+        return []
 
     mode = denoise_mode.lower()
 
@@ -179,6 +179,7 @@ def build_encoder_args(
         ai_choice = "1"
     elif not ai_choice:
         ai_choice = str(CONFIG.get("default_ai_choice", "2"))
+    denoise_args = map_denoise_to_filter(denoise_mode, encoder)
 
     # --- NVEncC PFAD ---
     if encoder_clean in ("nvencc", "nvenc", "nvencc64"):
@@ -190,13 +191,14 @@ def build_encoder_args(
             "-i", str(input_path),
             *base_args,
             *ai_args,
+            *denoise_args,
             "-o", str(output_path)
         ]
         return cmd
 
     # --- FFMPEG PFAD ---
     elif encoder_clean == "ffmpeg":
-        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(input_path)]
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(input_path), "-map", "0", "-map_chapters", "0"]
 
         # AI & Video-Filter
         ffmpeg_ai = get_ffmpeg_ai_mode_args(
@@ -248,6 +250,9 @@ def build_encoder_args(
 
         if extra_args:
             cmd.extend(extra_args)
+
+        if denoise_args is not None:
+            cmd.extend(denoise_args)
 
         cmd.append(str(output_path))
         return cmd

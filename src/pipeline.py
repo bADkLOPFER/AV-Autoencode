@@ -12,10 +12,10 @@ from pathlib import Path
 
 try:
     from .config import CONFIG, resolve_encoder_choice
-    from .media_analysis import analyze_media, analyze_noise_and_quality, has_forced_subtitles, calibrate_quality_vmaf, recommend_quality_value
+    from .media_analysis import analyze_media, analyze_noise_and_quality, get_forced_subtitle_track, calibrate_quality_vmaf, recommend_quality_value
     from .encoding import build_encoder_args, run_command
 except ImportError:  # pragma: no cover
-    from media_analysis import analyze_media, analyze_noise_and_quality, has_forced_subtitles, calibrate_quality_vmaf, recommend_quality_value
+    from media_analysis import analyze_media, analyze_noise_and_quality, get_forced_subtitle_track, calibrate_quality_vmaf, recommend_quality_value
     from encoding import build_encoder_args, run_command
     from config import CONFIG, resolve_encoder_choice
 
@@ -29,7 +29,8 @@ def process_job(
     input_path: Path,
     codec: str = "av1",
     encoder: Optional[str] = None,
-    quality: int = 22
+    quality: int = 22,
+    ai_mode: Optional[str] = None,
 ) -> None:
     encoder = resolve_encoder_choice(encoder)
     # 1. Eindeutige Job-ID erzeugen
@@ -93,8 +94,12 @@ def process_job(
         # SCHRITT 1: Analyse
         job_data["step"] = "ANALYZING"
         save_manifest(job_data)
-        media_info = analyze_media(work_input)
-        forced_subs = has_forced_subtitles(media_info.get("subtitle_streams", []))
+        configured_ai_mode = str(ai_mode or CONFIG.get("default_ai_choice", "2"))
+        media_info = analyze_media(work_input, ai_mode=configured_ai_mode)
+        ai_mode = media_info.get("ai_mode", configured_ai_mode)
+        forced_subtitle_track = get_forced_subtitle_track(media_info.get("subtitle_streams", []))
+        forced_subs = forced_subtitle_track is not None
+        is_interlaced = media_info.get("is_interlaced", False)
 
         # SCHRITT 2: Preflight & VMAF
         job_data["step"] = "NOISE_ANALYSIS"
@@ -128,9 +133,10 @@ def process_job(
                 codec=codec,
                 encoder=encoder,
                 initial_q=optimal_cq,
+                is_interlaced=is_interlaced,
             )
         
-        logger.info(f"VMAF-Analyse beendet. Optimaler CQ/CRF-Wert: {final_quality}")
+        logger.info(f"VMAF-Analyse beendet. Optimaler CQ/CRF-Wert: {final_quality}. Interlaced: {is_interlaced}.")
         job_data["computed_cq"] = final_quality
 
         # SCHRITT 3: Transkodierung
@@ -144,8 +150,11 @@ def process_job(
             encoder=encoder,
             codec=codec,
             quality_value=final_quality,
+            ai_choice=ai_mode,
             audio_mode="copy",
             subtitle_burn=forced_subs,
+            use_nnedi=is_interlaced,
+            subtitle_track=forced_subtitle_track,
         )
 
         # Encoder-Meldungen direkt in unseren job-spezifischen Logger leiten
