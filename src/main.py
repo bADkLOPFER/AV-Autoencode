@@ -26,13 +26,13 @@ def main() -> None:
         help="Pfad zur Quelldatei (z.B. C:/Videos/film.mp4)"
     )
 
-    # Optionale Argumente mit euren vereinbarten Standards (Default = AV1)
+    # Optionale Argumente mit euren vereinbarten Standards (Default = config.json/default_codec)
     parser.add_argument(
         "-c", "--codec",
         type=str,
-        default="av1",
+        default=None,
         choices=["av1", "hevc", "h264"],
-        help="Ziel-Codec für die Transkodierung (Standard: av1)"
+        help="Ziel-Codec für die Transkodierung (Standard: aus config.json/default_codec)"
     )
     
     parser.add_argument(
@@ -59,7 +59,7 @@ def main() -> None:
         sys.exit(1)
 
     logger.info(f"[>] CLI-Start: Verarbeite {input_path.name}")
-    logger.info(f"[>] Einstellungen: Codec={args.codec.upper()}, Encoder={args.encoder}, Quality={args.quality}")
+    logger.info(f"[>] Einstellungen: Codec={(args.codec or 'config-default').upper()}, Encoder={args.encoder}, Quality={args.quality}")
 
     try:
         # Direkter Aufruf der überarbeiteten Pipeline-Engine

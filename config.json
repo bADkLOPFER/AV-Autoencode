@@ -9,6 +9,6 @@
         "vmaf": "./VMAF/vmaf.exe"
     },
     "default_encoder": "nvencc64.exe",
-    "default_codec": "av1",
+    "default_codec": "hevc",
     "default_ai_choice": "2"
 }

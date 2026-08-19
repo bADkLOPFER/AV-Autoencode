@@ -165,6 +165,7 @@ def build_encoder_args(
     denoise_mode: str = "off",
     audio_mode: str = "copy",
     subtitle_burn: bool = False,  # <-- JETZT EXPILZIT ABGEFANGEN
+    subtitle_track: Optional[int] = None,  # 0-basierter Index des Subtitle-Streams, der gebrannt werden soll
     extra_args: Optional[Sequence[str]] = None,
     is_preflight: bool = False,
     **kwargs  # <-- Fängt alle weiteren Übergabeparameter aus pipeline.py ab!
@@ -185,13 +186,20 @@ def build_encoder_args(
     if encoder_clean in ("nvencc", "nvenc", "nvencc64"):
         base_args = get_nvenc_base_args(codec=codec, qvbr=quality_value, extra_args=extra_args)
         ai_args = get_ai_mode_args_nvencc(ai_choice=ai_choice, use_nnedi=use_nnedi)
-        
+
+        subburn_args = []
+        if subtitle_burn and not is_preflight:
+            # Immer der erste Subtitle-Track (1-basiert bei NVEncC); nur dessen forced Cues brennen
+            nvenc_track = (subtitle_track if subtitle_track is not None else 0) + 1
+            subburn_args = ["--vpp-subburn", f"track={nvenc_track},forced_subs_only=on"]
+
         cmd = [
             NVENCC_BIN,
             "-i", str(input_path),
             *base_args,
             *ai_args,
             *denoise_args,
+            *subburn_args,
             "-o", str(output_path)
         ]
         return cmd
@@ -210,9 +218,10 @@ def build_encoder_args(
         if ffmpeg_ai["vf_string"]:
             vf_list.append(ffmpeg_ai["vf_string"])
 
-        # Subtitle Hardburn falls aktiviert
+        # Subtitle Hardburn falls aktiviert: nur der erste Subtitle-Track (dieser enthält die forced Cues)
         if subtitle_burn and not is_preflight:
-            vf_list.append(f"subtitles='{input_path}'")
+            ffmpeg_sub_index = subtitle_track if subtitle_track is not None else 0
+            vf_list.append(f"subtitles='{input_path}':si={ffmpeg_sub_index}")
 
         if vf_list:
             cmd.extend(["-vf", ",".join(vf_list)])

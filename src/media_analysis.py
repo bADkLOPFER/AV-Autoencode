@@ -336,9 +336,9 @@ def recommend_quality_value(
     if encoder == "ffmpeg":
         result = find_quality_value_ffmpeg(plan, codec=codec, requested_quality=requested_quality)
         return int(result["quality_value"])
-
-    result = find_quality_value_nvenc(plan, codec=codec, encoder=encoder, requested_quality=requested_quality)
-    return int(result["quality_value"])
+    else:
+        result = find_quality_value_nvenc(plan, codec=codec, encoder=encoder, requested_quality=requested_quality)
+        return int(result["quality_value"])
 
 def analyze_noise_and_quality(
     file_path: Path,
@@ -753,10 +753,21 @@ def calibrate_quality_vmaf(
     return best_q, last_sample_duration
 
 def get_forced_subtitle_track(subtitle_streams: List[Dict[str, Any]]) -> Optional[int]:
-    """Returns the zero-based subtitle-stream position of the first forced track."""
+    """Returns the zero-based subtitle-stream position of the first forced track.
+
+    Manche Mux-Tools setzen das FlagForced-Bit im Container nicht, sondern
+    markieren die Spur nur über den Titel/Tag (z.B. "Forced", "Signs"). Daher
+    wird zusätzlich zur Disposition auch der Titel-Tag als Fallback geprüft.
+    """
     for position, stream in enumerate(subtitle_streams):
         if _safe_int(stream.get("disposition", {}).get("forced", 0), 0) == 1:
             return position
+
+    for position, stream in enumerate(subtitle_streams):
+        title = str(stream.get("tags", {}).get("title", "")).lower()
+        if "forced" in title:
+            return position
+
     return None
 
 

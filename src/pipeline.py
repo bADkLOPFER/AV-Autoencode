@@ -27,12 +27,13 @@ INBOX_DIR = Path(CONFIG["inbox_dir"])
 
 def process_job(
     input_path: Path,
-    codec: str = "av1",
+    codec: Optional[str] = None,
     encoder: Optional[str] = None,
     quality: int = 22,
     ai_mode: Optional[str] = None,
 ) -> None:
     encoder = resolve_encoder_choice(encoder)
+    codec = codec or str(CONFIG.get("default_codec", "av1"))
     # 1. Eindeutige Job-ID erzeugen
     clean_stem = re.sub(r'[^\w\-_.]', '_', input_path.stem).strip('_')
     job_id = f"{clean_stem}_{uuid.uuid4().hex[:6]}"
