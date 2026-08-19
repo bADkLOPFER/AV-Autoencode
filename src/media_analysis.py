@@ -273,7 +273,7 @@ def find_quality_value_nvenc(
 
     if last_vmaf is not None and last_vmaf > upper_bound and qvbr < max_qvbr:
         while qvbr < max_qvbr:
-            qvbr = int(min(max_qvbr, qvbr + 2))
+            qvbr = int(min(max_qvbr, qvbr + steps[-1]))  # mit der feinsten Schrittweite weitersuchen, statt zurück auf 2 zu springen
             vmaf = float(estimate_fn(plan, qvbr, requested_quality))
             attempts.append({"qvbr": qvbr, "vmaf": round(vmaf, 3)})
             last_vmaf = vmaf
@@ -295,7 +295,7 @@ def find_quality_value_ffmpeg(
 
     max_crf = 34 if codec == "av1" else 30
     crf = 27 if codec == "av1" else 22
-    steps = [2, 1]
+    steps = [4, 2, 1]
     attempts: List[Dict[str, Any]] = []
     last_vmaf: Optional[float] = None
 
@@ -308,15 +308,15 @@ def find_quality_value_ffmpeg(
             return {"quality_value": crf, "attempts": attempts, "vmaf": vmaf}
 
         if vmaf > upper_bound:
-            crf -= step
+            crf += step  # höherer CRF = niedrigere Qualität/VMAF, wie beim QVBR-Pendant
         elif vmaf < lower_bound:
-            crf += step
+            crf -= step
 
         crf = int(_clamp(crf, 1, max_crf))
 
     if last_vmaf is not None and last_vmaf > upper_bound and crf < max_crf:
         while crf < max_crf:
-            crf = int(min(max_crf, crf + 1))
+            crf = int(min(max_crf, crf + steps[-1]))
             vmaf = float(default_quality_estimator(plan, crf, requested_quality))
             attempts.append({"crf": crf, "vmaf": round(vmaf, 3)})
             last_vmaf = vmaf
@@ -692,8 +692,12 @@ def calibrate_quality_vmaf(
     best_q = current_q
     min_delta = 999.0
     last_sample_duration = 0.0
+    prev_q: Optional[int] = None
+    prev_vmaf: Optional[float] = None
+    max_attempts = 6
+    default_step = 2
 
-    for attempt in range(1, 4):
+    for attempt in range(1, max_attempts + 1):
         test_encoded = work_dir / f"{input_path.stem}_test_q{current_q}.mkv"
 
         test_cmd = build_encoder_args(
@@ -708,7 +712,7 @@ def calibrate_quality_vmaf(
         )
 
         logger.debug("Test-Encode Befehl (Versuch %d, Q=%d): %s", attempt, current_q, " ".join(test_cmd))
-        print(f"    -> Teste Durchlauf {attempt}/3 mit Qualitätsstufe Q={current_q}...")
+        print(f"    -> Teste Durchlauf {attempt}/{max_attempts} mit Qualitätsstufe Q={current_q}...")
 
         try:
             t_start = time.time()
@@ -742,10 +746,22 @@ def calibrate_quality_vmaf(
             print(f"[OK] VMAF-Zielwert im Toleranzbereich getroffen bei Q={current_q}!")
             return current_q, last_sample_duration
 
+        # Schrittweite aus der bisher gemessenen Steigung (VMAF pro Q) schätzen,
+        # damit große Abweichungen (z.B. VMAF 99.8 bei Ziel ~96.5) nicht an
+        # trägen 2er-Schritten scheitern, bevor die Versuche aufgebraucht sind.
+        step = default_step
+        if prev_q is not None and prev_vmaf is not None and current_q != prev_q:
+            slope = (prev_vmaf - vmaf_score) / (current_q - prev_q)
+            if abs(slope) > 1e-3:
+                gap = vmaf_score - upper_bound if vmaf_score > upper_bound else lower_bound - vmaf_score
+                step = max(1, min(int(round(abs(gap / slope))), 8))
+
+        prev_q, prev_vmaf = current_q, vmaf_score
+
         if vmaf_score > upper_bound:
-            current_q += 2
+            current_q += step
         else:
-            current_q -= 2
+            current_q -= step
 
         current_q = max(14, min(current_q, 36))
 
