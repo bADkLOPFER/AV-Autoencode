@@ -35,16 +35,19 @@ IS_MACOS = PLATFORM == "macos"
 IS_LINUX = PLATFORM == "linux"
 
 DEFAULT_ENCODER = "nvencc64" if IS_WINDOWS else "ffmpeg"
-ENCODER_CHOICES = ("ffmpeg", "nvencc", "nvencc64")
+ENCODER_CHOICES = ("ffmpeg", "nvencc", "nvencc64", "qsv", "vcenc", "vceenc")
 DEFAULT_WEB_PORT = 8265
 DEFAULT_VMAF_BIN = "vmaf.exe" if IS_WINDOWS else "vmaf"
 
 
 # 2. Hilfsfunktionen zur Konfiguration
 def _ensure_exe(path_str: str) -> str:
-    """Stellt sicher, dass ein Pfad unter Windows auf .exe endet."""
+    """Normalisiert plattformspezifische Tool-Endungen."""
+    path_str = str(path_str)
     if IS_WINDOWS and not path_str.lower().endswith(".exe"):
         return f"{path_str}.exe"
+    if not IS_WINDOWS and path_str.lower().endswith(".exe"):
+        return path_str[:-4]
     return path_str
 
 
@@ -53,7 +56,11 @@ def resolve_encoder_choice(requested: Optional[str]) -> str:
     if requested is None:
         return DEFAULT_ENCODER
 
-    normalized = requested.lower()
+    normalized = requested.lower().strip()
+    if normalized.endswith(".exe"):
+        normalized = normalized[:-4]
+    if normalized == "vceenc":
+        normalized = "vcenc"
     if normalized not in ENCODER_CHOICES:
         logger.warning(
             f"Ungültiger Encoder '{requested}'. Erlaubt sind: {ENCODER_CHOICES}. Fallback auf '{DEFAULT_ENCODER}'."
@@ -127,10 +134,12 @@ def load_config(config_file: Path = CONFIG_PATH) -> Dict[str, Any]:
     for key in ["inbox_dir", "work_dir", "result_dir", "done_dir"]:
         Path(config[key]).mkdir(parents=True, exist_ok=True)
 
-    # Sicherstellen, dass unter Windows alle Tool-Pfade .exe besitzen
-    if IS_WINDOWS and "tools" in config:
+    # Tool-Endungen an das laufende Betriebssystem anpassen.
+    if "tools" in config:
         for tool_key, tool_path in config["tools"].items():
             config["tools"][tool_key] = _ensure_exe(tool_path)
+    if "default_encoder" in config:
+        config["default_encoder"] = resolve_encoder_choice(config["default_encoder"])
 
     return config
 

@@ -24,6 +24,7 @@ FFPROBE_BIN = CONFIG.get("tools", {}).get("ffprobe", "ffprobe")
 NVENCC_BIN = CONFIG.get("tools", {}).get("nvencc") or ("nvencc64.exe" if IS_WINDOWS else "nvencc")
 VMAF_BIN = CONFIG.get("tools", {}).get("vmaf", "vmaf.exe" if IS_WINDOWS else "vmaf")
 WORK_DIR = CONFIG["work_dir"]
+PROGRESSIVE_DEINTERLACE_FILTER = "bwdif=mode=0:parity=-1:deint=0,setparams=field_mode=prog"
 
 def _safe_float(val: Any, default: float = 0.0) -> float:
     """Konvertiert Werte sicher in float (fängt 'N/A' ab)."""
@@ -333,7 +334,7 @@ def recommend_quality_value(
     encoder: str = "nvencc",
     requested_quality: int = 22,
 ) -> int:
-    if encoder == "ffmpeg":
+    if encoder.lower().strip() in ("ffmpeg", "qsv", "vcenc", "vceenc"):
         result = find_quality_value_ffmpeg(plan, codec=codec, requested_quality=requested_quality)
         return int(result["quality_value"])
     else:
@@ -640,6 +641,22 @@ def calculate_vmaf_score(
 
     return 0.0
 
+
+def cleanup_vmaf_samples(work_dir: Path, input_stem: str) -> None:
+    """Entfernt die temporären VMAF-Samples eines Jobs aus dem Arbeitsordner."""
+    patterns = (
+        f"{input_stem}_ref_peak_*.mkv",
+        f"{input_stem}_test_q*.mkv",
+        f"{input_stem}_ref_peak_*.y4m",
+        f"{input_stem}_test_q*.y4m",
+    )
+    for pattern in patterns:
+        for sample_path in work_dir.glob(pattern):
+            try:
+                sample_path.unlink()
+            except OSError as exc:
+                logger.warning("VMAF-Sample konnte nicht gelöscht werden (%s): %s", sample_path, exc)
+
 def calibrate_quality_vmaf(
     input_path: Path,
     work_dir: Path,
@@ -659,7 +676,7 @@ def calibrate_quality_vmaf(
     ensure_dir(work_dir)
 
     ffmpeg_bin = FFMPEG_BIN
-    ref_sample = work_dir / f"{input_path.stem}_ref_peak_10s.mkv"
+    ref_sample = work_dir / f"{input_path.stem}_ref_peak_20s.mkv"
 
     cut_cmd = [
         str(ffmpeg_bin),
@@ -668,15 +685,26 @@ def calibrate_quality_vmaf(
         "-y",
         "-ss", str(peak_time),
         "-i", str(input_path),
-        "-t", "10",
+        "-t", "20",
         "-map", "0:v:0",
-        "-c:v", "copy",
+        "-an", "-sn",
+    ]
+
+    if is_interlaced:
+        cut_cmd.extend([
+            "-vf", PROGRESSIVE_DEINTERLACE_FILTER,
+            "-c:v", "ffv1",
+        ])
+    else:
+        cut_cmd.extend(["-c:v", "copy"])
+
+    cut_cmd.extend([
         "-avoid_negative_ts", "make_zero",
         str(ref_sample),
-    ]
+    ])
         
     logger.debug("FFmpeg Referenz-Extraktionsbefehl: %s", " ".join(cut_cmd))
-    print(f"    -> Erstelle 10s Referenz-Sample im Arbeitsverzeichnis...")
+    print(f"    -> Erstelle 20s Referenz-Sample im Arbeitsverzeichnis...")
 
     try:
         run_command(cut_cmd)
@@ -706,8 +734,7 @@ def calibrate_quality_vmaf(
             encoder=encoder,
             codec=codec,
             quality_value=current_q,
-            use_nnedi=is_interlaced,
-            is_interlaced=is_interlaced,
+            use_nnedi=False,
             is_preflight=True
         )
 
@@ -728,7 +755,7 @@ def calibrate_quality_vmaf(
         vmaf_score = calculate_vmaf_score(
             reference_sample=ref_sample,
             encoded_sample=test_encoded,
-            is_interlaced=is_interlaced
+            is_interlaced=False
         )
 
         if vmaf_score <= 0.0:

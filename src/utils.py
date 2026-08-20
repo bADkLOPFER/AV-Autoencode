@@ -31,6 +31,35 @@ class HWProfile:
     hevc_encoder: str
     sample_preset_args: List[str]
 
+
+@lru_cache(maxsize=8)
+def is_ffmpeg_hardware_encoder_available(
+    encoder: str,
+    codec: str,
+    ffmpeg_bin: Optional[str | Path] = None,
+) -> bool:
+    """Prüft einen konkret angeforderten FFmpeg-Hardwareencoder."""
+    ffmpeg_str = str(ffmpeg_bin or FFMPEG_BIN)
+    encoder_name = {
+        "qsv": {"av1": "av1_qsv", "hevc": "hevc_qsv", "h264": "h264_qsv"},
+        "vcenc": {"av1": "av1_amf", "hevc": "hevc_amf", "h264": "h264_amf"},
+        "vceenc": {"av1": "av1_amf", "hevc": "hevc_amf", "h264": "h264_amf"},
+    }.get(encoder.lower().strip(), {}).get(codec.lower().strip())
+    if not encoder_name:
+        return False
+
+    try:
+        result = subprocess.run(
+            [ffmpeg_str, "-hide_banner", "-encoders"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return False
+
+    return any(line.split() and line.split()[-1] == encoder_name for line in result.stdout.splitlines())
+
 @lru_cache(maxsize=1)
 def detect_hardware(ffmpeg_bin: Optional[str | Path] = None) -> HWProfile:
     """
@@ -119,6 +148,18 @@ def detect_hardware(ffmpeg_bin: Optional[str | Path] = None) -> HWProfile:
             h264_encoder="h264_qsv",
             hevc_encoder="hevc_qsv",
             sample_preset_args=["-preset", "medium"],
+        )
+
+    # --- AMD AMF / VCE ---
+    amf_runtime_ok = os_name == "Windows" and "h264_amf" in encoders
+    if amf_runtime_ok:
+        logger.info("Hardware-Beschleunigung aktiv: AMD AMF (VCE)")
+        return HWProfile(
+            name="amf",
+            hwaccel_flag=None,
+            h264_encoder="h264_amf",
+            hevc_encoder="hevc_amf",
+            sample_preset_args=["-quality", "quality"],
         )
 
     # --- VAAPI (Intel / AMD unter Linux) ---

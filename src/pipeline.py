@@ -12,12 +12,14 @@ from pathlib import Path
 
 try:
     from .config import CONFIG, resolve_encoder_choice
-    from .media_analysis import analyze_media, analyze_noise_and_quality, get_forced_subtitle_track, calibrate_quality_vmaf, recommend_quality_value
+    from .media_analysis import analyze_media, analyze_noise_and_quality, get_forced_subtitle_track, calibrate_quality_vmaf, recommend_quality_value, get_video_duration, cleanup_vmaf_samples
     from .encoding import build_encoder_args, run_command
+    from .utils import calculate_adjusted_speed_factor, estimate_total_duration, is_ffmpeg_hardware_encoder_available
 except ImportError:  # pragma: no cover
-    from media_analysis import analyze_media, analyze_noise_and_quality, get_forced_subtitle_track, calibrate_quality_vmaf, recommend_quality_value
+    from media_analysis import analyze_media, analyze_noise_and_quality, get_forced_subtitle_track, calibrate_quality_vmaf, recommend_quality_value, get_video_duration, cleanup_vmaf_samples
     from encoding import build_encoder_args, run_command
     from config import CONFIG, resolve_encoder_choice
+    from utils import calculate_adjusted_speed_factor, estimate_total_duration, is_ffmpeg_hardware_encoder_available
 
 WORK_DIR = Path(CONFIG["work_dir"])
 RESULT_DIR = Path(CONFIG["result_dir"])
@@ -33,7 +35,22 @@ def process_job(
     ai_mode: Optional[str] = None,
 ) -> None:
     encoder = resolve_encoder_choice(encoder)
+    requested_encoder = encoder
     codec = codec or str(CONFIG.get("default_codec", "av1"))
+    if encoder in ("qsv", "vcenc"):
+        if not is_ffmpeg_hardware_encoder_available(encoder, codec):
+            logger = logging.getLogger("omni_pipeline")
+            logger.warning("Encoder '%s' für Codec '%s' nicht verfügbar. Fallback auf ffmpeg.", encoder, codec)
+            encoder = "ffmpeg"
+    elif encoder in ("nvencc", "nvencc64"):
+        configured_nvencc = str(CONFIG.get("tools", {}).get("nvencc", "nvencc"))
+        nvencc_path = Path(configured_nvencc)
+        if not nvencc_path.exists() and shutil.which(configured_nvencc) is None:
+            logger = logging.getLogger("omni_pipeline")
+            logger.warning("NVEncC '%s' nicht verfügbar. Fallback auf ffmpeg.", configured_nvencc)
+            encoder = "ffmpeg"
+    if requested_encoder != encoder:
+        logging.getLogger("omni_pipeline").info("Verwende Encoder: %s", encoder)
     # 1. Eindeutige Job-ID erzeugen
     clean_stem = re.sub(r'[^\w\-_.]', '_', input_path.stem).strip('_')
     job_id = f"{clean_stem}_{uuid.uuid4().hex[:6]}"
@@ -143,6 +160,23 @@ def process_job(
         # SCHRITT 3: Transkodierung
         job_data["step"] = "ENCODING"
         logger.info(f"Starte Haupt-Encoding ({codec.upper()} via {encoder.upper()}, CQ: {final_quality})...")
+
+        source_duration = get_video_duration(work_input)
+        if source_duration > 0 and sample_duration > 0:
+            measured_speed = 20.0 / sample_duration
+            filter_mode = "nnedi_slow" if is_interlaced else "none"
+            adjusted_speed = calculate_adjusted_speed_factor(measured_speed, filter_mode)
+            estimated_duration = estimate_total_duration(source_duration, adjusted_speed)
+            eta_timestamp = time.time() + estimated_duration
+            eta_local = time.strftime("%H:%M", time.localtime(eta_timestamp))
+            duration_minutes, duration_seconds = divmod(int(round(estimated_duration)), 60)
+            logger.info(
+                "Geschätzte Dauer %02d:%02d, wahrscheinliche ETA %s",
+                duration_minutes,
+                duration_seconds,
+                eta_local,
+            )
+
         save_manifest(job_data)
 
         enc_args = build_encoder_args(
@@ -196,6 +230,8 @@ def process_job(
         raise err
 
     finally:
+        cleanup_vmaf_samples(WORK_DIR, input_path.stem)
+
         # File-Handler schließen, damit die Log-Datei zum Verschieben freigegeben wird
         file_handler.close()
         logger.removeHandler(file_handler)

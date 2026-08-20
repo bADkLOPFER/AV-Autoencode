@@ -38,9 +38,9 @@ def main() -> None:
     parser.add_argument(
         "-e", "--encoder",
         type=str,
-        default="nvencc",
-        choices=["nvencc", "qsvencc", "vceenc", "ffmpeg"],
-        help="Zu verwendender Encoder (Standard: nvencc)"
+        default=None,
+        choices=["nvencc", "nvencc64", "qsv", "vcenc", "vceenc", "ffmpeg"],
+        help="Zu verwendender Encoder (Standard: Plattform-/config.json-Default; Fallback: ffmpeg)"
     )
 
     parser.add_argument(

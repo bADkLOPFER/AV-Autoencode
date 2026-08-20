@@ -20,11 +20,18 @@ FFPROBE_BIN = CONFIG.get("tools", {}).get("ffprobe", "ffprobe")
 NVENCC_BIN = CONFIG.get("tools", {}).get("nvencc") or ("nvencc64.exe" if IS_WINDOWS else "nvencc")
 VMAF_BIN = CONFIG.get("tools", {}).get("vmaf", "vmaf.exe" if IS_WINDOWS else "vmaf")
 
-def get_nvenc_base_args(codec: str = "hevc", qvbr: int = 22, extra_args: Optional[Sequence[str]] = None) -> list[str]:
+def get_nvenc_base_args(
+    codec: str = "hevc",
+    qvbr: int = 22,
+    extra_args: Optional[Sequence[str]] = None,
+    input_reader: str = "avhw",
+) -> list[str]:
     """Generiert die Basis-Argumente für NVEncC."""
+    reader_args = ["--avsw"] if input_reader == "avsw" else ["--avhw"]
+
     if codec == "hevc":
         args = [
-            "--avhw", "--codec", "hevc", "--profile", "main10", "--tier", "high",
+            *reader_args, "--codec", "hevc", "--profile", "main10", "--tier", "high",
             "--level", "5.1", "--qvbr", str(qvbr), "--output-depth", "10",
             "--preset", "P7", "--multipass", "2pass-full", "--lookahead", "32",
             "--lookahead-level", "3", "--aq", "--aq-temporal", "--ref", "4",
@@ -32,7 +39,7 @@ def get_nvenc_base_args(codec: str = "hevc", qvbr: int = 22, extra_args: Optiona
         ]
     else:
         args = [
-            "--avhw", "--codec", "av1", "--profile", "main", "--qvbr", str(qvbr),
+            *reader_args, "--codec", "av1", "--profile", "main", "--qvbr", str(qvbr),
             "--output-depth", "10", "--preset", "P7", "--multipass", "2pass-full",
             "--lookahead", "32", "--lookahead-level", "3", "--aq", "--aq-temporal",
             "--ref", "4", "--bframes", "4", "--bref-mode", "middle", "--pic-struct", "--audio-copy", "--chapter-copy",
@@ -139,7 +146,7 @@ def map_denoise_to_filter(denoise_mode: str, encoder: str = "nvencc") -> Optiona
 
     mode = denoise_mode.lower()
 
-    if encoder == "nvencc":
+    if encoder.lower().strip() in ("nvencc", "nvencc64", "nvenc"):
         pmd_modes = {
             "light": ["--vpp-pmd", "apply_count=1,strength=10,threshold=25"],
             "medium": ["--vpp-pmd", "apply_count=1,strength=20,threshold=35"],
@@ -184,7 +191,12 @@ def build_encoder_args(
 
     # --- NVEncC PFAD ---
     if encoder_clean in ("nvencc", "nvenc", "nvencc64"):
-        base_args = get_nvenc_base_args(codec=codec, qvbr=quality_value, extra_args=extra_args)
+        base_args = get_nvenc_base_args(
+            codec=codec,
+            qvbr=quality_value,
+            extra_args=extra_args,
+            input_reader="avsw" if is_preflight else "avhw",
+        )
         ai_args = get_ai_mode_args_nvencc(ai_choice=ai_choice, use_nnedi=use_nnedi)
 
         subburn_args = []
@@ -204,9 +216,15 @@ def build_encoder_args(
         ]
         return cmd
 
-    # --- FFMPEG PFAD ---
-    elif encoder_clean == "ffmpeg":
-        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(input_path), "-map", "0", "-map_chapters", "0"]
+    # --- FFMPEG / HARDWARE-ENCODER-PFAD ---
+    elif encoder_clean in ("ffmpeg", "qsv", "vcenc", "vceenc"):
+        cmd = [str(FFMPEG_BIN), "-hide_banner", "-loglevel", "error", "-y", "-i", str(input_path), "-map", "0", "-map_chapters", "0"]
+
+        ffmpeg_encoder = None
+        if encoder_clean == "qsv":
+            ffmpeg_encoder = {"av1": "av1_qsv", "hevc": "hevc_qsv", "h265": "hevc_qsv", "h264": "h264_qsv"}.get(codec)
+        elif encoder_clean in ("vcenc", "vceenc"):
+            ffmpeg_encoder = {"av1": "av1_amf", "hevc": "hevc_amf", "h265": "hevc_amf", "h264": "h264_amf"}.get(codec)
 
         # AI & Video-Filter
         ffmpeg_ai = get_ffmpeg_ai_mode_args(
@@ -227,7 +245,11 @@ def build_encoder_args(
             cmd.extend(["-vf", ",".join(vf_list)])
 
         # Codec-Einstellung
-        if IS_MACOS:
+        if ffmpeg_encoder:
+            cmd.extend(["-c:v", ffmpeg_encoder])
+            if encoder_clean == "qsv":
+                cmd.extend(["-preset", "medium"])
+        elif IS_MACOS:
             if codec == "av1":
                 # Versuche av1_videotoolbox mit passenden VT-Optionen oder nutze libsvtav1
                 cmd.extend(["-c:v", "libsvtav1", "-crf", str(quality_value), "-preset", "6"])
