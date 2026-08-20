@@ -94,8 +94,9 @@ def get_ffmpeg_ai_mode_args(
 
     # Deinterlacing + Upscaling für SD (Choice 3 & 4)
     if ai_choice in ("3", "4"):
-        if use_nnedi:
-            vf_filters.append("nnedi=field=af:deint=all")
+        nnedi_weights = CONFIG.get("nnedi_weights")
+        if use_nnedi and nnedi_weights and Path(str(nnedi_weights)).is_file():
+            vf_filters.append(f"nnedi=field=af:deint=all:weights={nnedi_weights}")
         else:
             vf_filters.append("bwdif=mode=0:parity=-1:deint=0")
         

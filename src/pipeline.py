@@ -5,26 +5,100 @@ import json
 import logging
 import os
 import shutil
+import subprocess
 import time
 import uuid
 import re
 from pathlib import Path
 
 try:
-    from .config import CONFIG, resolve_encoder_choice
+    from .config import CONFIG, IS_WINDOWS, resolve_encoder_choice
     from .media_analysis import analyze_media, analyze_noise_and_quality, get_forced_subtitle_track, calibrate_quality_vmaf, recommend_quality_value, get_video_duration, cleanup_vmaf_samples, FFPROBE_BIN
     from .encoding import build_encoder_args, run_command
     from .utils import calculate_adjusted_speed_factor, estimate_total_duration, is_ffmpeg_hardware_encoder_available
 except ImportError:  # pragma: no cover
     from media_analysis import analyze_media, analyze_noise_and_quality, get_forced_subtitle_track, calibrate_quality_vmaf, recommend_quality_value, get_video_duration, cleanup_vmaf_samples, FFPROBE_BIN
     from encoding import build_encoder_args, run_command
-    from config import CONFIG, resolve_encoder_choice
+    from config import CONFIG, IS_WINDOWS, resolve_encoder_choice
     from utils import calculate_adjusted_speed_factor, estimate_total_duration, is_ffmpeg_hardware_encoder_available
 
 WORK_DIR = Path(CONFIG["work_dir"])
 RESULT_DIR = Path(CONFIG["result_dir"])
 DONE_DIR = Path(CONFIG["done_dir"])
 INBOX_DIR = Path(CONFIG["inbox_dir"])
+
+
+def _copy_stable_input(source: Path, destination: Path) -> None:
+    """Kopiert eine fertige Datei per Robocopy/Rsync und überwacht den Fortschritt."""
+    stable_size = None
+    stable_checks = 0
+    while stable_checks < 5:
+        current_size = source.stat().st_size
+        if current_size > 0 and current_size == stable_size:
+            stable_checks += 1
+        else:
+            stable_size = current_size
+            stable_checks = 1 if current_size > 0 else 0
+        if stable_checks < 5:
+            time.sleep(5)
+
+    destination.unlink(missing_ok=True)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    if IS_WINDOWS:
+        command = [
+            "robocopy",
+            str(source.parent),
+            str(destination.parent),
+            source.name,
+            "/J", "/Z", "/R:2", "/W:5", "/NFL", "/NDL", "/NP",
+        ]
+    else:
+        if shutil.which("rsync") is None:
+            raise FileNotFoundError("rsync wurde nicht gefunden")
+        command = [
+            "rsync", "--archive", "--partial", "--inplace",
+            str(source), str(destination),
+        ]
+
+    copy_process = subprocess.Popen(
+        command,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT,
+    )
+    source_changed = False
+    while copy_process.poll() is None:
+        time.sleep(5)
+        current_source_size = source.stat().st_size
+        current_destination_size = destination.stat().st_size if destination.exists() else 0
+        print(
+            f"[...] Kopiere {source.name}: "
+            f"{current_destination_size / 1024 / 1024:.0f} / "
+            f"{current_source_size / 1024 / 1024:.0f} MiB"
+        )
+        if current_source_size != stable_size:
+            source_changed = True
+            copy_process.terminate()
+            break
+
+    if source_changed:
+        copy_process.wait()
+        destination.unlink(missing_ok=True)
+        raise IOError(f"Quelle wurde während des Kopierens verändert: {source.name}")
+
+    return_code = copy_process.wait()
+    if (IS_WINDOWS and return_code >= 8) or (not IS_WINDOWS and return_code != 0):
+        destination.unlink(missing_ok=True)
+        raise IOError(f"Kopieren nach Work fehlgeschlagen (Exit-Code {return_code}): {source.name}")
+
+    source_size = source.stat().st_size
+    destination_size = destination.stat().st_size
+    if source_size != stable_size or destination_size != source_size:
+        destination.unlink(missing_ok=True)
+        raise IOError(
+            f"Quelle wurde während des Kopierens verändert: "
+            f"Quelle {source_size} Bytes, Ziel {destination_size} Bytes"
+        )
 
 
 def _output_encoder_label(encoder: str) -> str:
@@ -88,13 +162,15 @@ def process_job(
     is_from_inbox = (INBOX_DIR.resolve() in input_path.resolve().parents) or (input_path.parent.resolve() == INBOX_DIR.resolve())
 
     if is_from_inbox:
-        # Kommt aus INBOX: Verschieben nach Work (Watcher-Prozess)
+        # Kommt aus INBOX: Lokal nach Work kopieren, damit die Verarbeitung nicht über SMB läuft.
         if input_path.resolve() != work_input.resolve():
-            shutil.move(str(input_path), str(work_input))
+            _copy_stable_input(input_path, work_input)
     else:
         # Kommt von der CLI / einem externen Pfad: Kopieren nach Work, damit Original erhalten bleibt
         if input_path.resolve() != work_input.resolve():
             shutil.copy2(str(input_path), str(work_input))
+
+    print(f"[OK] Kopie abgeschlossen: {work_input.name}. Starte jetzt Analyse und Transcoding...")
 
     # 2. Job-spezifischen Logger aufsetzen
     logger = logging.getLogger(f"omni.{job_id}")
@@ -272,12 +348,14 @@ def process_job(
         if job_log_path.exists():
             shutil.move(str(job_log_path), str(RESULT_DIR / job_log_path.name))
 
-        # Bei Inbox-Dateien schieben wir das verarbeitete Original nach DONE_DIR
-        # Bei CLI-Dateien löschen wir nur die temporäre Kopie aus Work/
+        # Bei Inbox-Dateien erst nach Erfolg das Original nach DONE_DIR verschieben.
+        # Bei CLI-Dateien löschen wir nur die temporäre Kopie aus Work/.
         if work_input.exists():
             if is_from_inbox:
-                DONE_DIR.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(work_input), str(DONE_DIR / work_input.name))
+                if job_data.get("status") == "finished":
+                    DONE_DIR.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(input_path), str(DONE_DIR / input_path.name))
+                work_input.unlink()
             else:
                 try:
                     work_input.unlink()

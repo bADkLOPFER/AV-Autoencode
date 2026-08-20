@@ -9,11 +9,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
-    from config import CONFIG, IS_WINDOWS
+    from config import CONFIG, IS_MACOS, IS_WINDOWS
     from .encoding import build_encoder_args, run_command
     from .utils import _clamp, ensure_dir, logger
 except ImportError:  # pragma: no cover
-    from config import CONFIG, IS_WINDOWS
+    from config import CONFIG, IS_MACOS, IS_WINDOWS
     from encoding import build_encoder_args, run_command
     from utils import _clamp, ensure_dir, logger
 
@@ -241,6 +241,9 @@ def default_quality_estimator(plan: Dict[str, Any], candidate_quality: int, requ
 
 def _quality_bounds(codec: str) -> Tuple[int, int]:
     """Liefert die zulässigen Preflight-Qualitätsgrenzen je Codec."""
+    if IS_MACOS:
+        # VideoToolbox: höherer q:v-Wert bedeutet höhere Qualität/Bitrate.
+        return 1, 100
     if codec.lower().strip() == "av1":
         return 20, 34
     return 15, 29
@@ -316,13 +319,15 @@ def find_quality_value_ffmpeg(
     plan: Dict[str, Any],
     codec: str = "hevc",
     requested_quality: int = 22,
+    encoder: str = "ffmpeg",
 ) -> Dict[str, Any]:
     target_vmaf = float(plan.get("target_vmaf", 97.0))
     lower_bound = float(plan.get("lower_bound", target_vmaf - 0.5))
     upper_bound = float(plan.get("upper_bound", target_vmaf + 0.5))
 
     min_crf, max_crf = _quality_bounds(codec)
-    crf = 27 if codec == "av1" else 22
+    is_videotoolbox = IS_MACOS and encoder.lower().strip() == "ffmpeg" and codec.lower().strip() in {"hevc", "h265", "h264"}
+    crf = 50 if is_videotoolbox else (27 if codec == "av1" else 22)
     steps = [4, 2, 1]
     attempts: List[Dict[str, Any]] = []
     last_vmaf: Optional[float] = None
@@ -335,14 +340,20 @@ def find_quality_value_ffmpeg(
         if lower_bound <= vmaf <= upper_bound:
             return {"quality_value": crf, "attempts": attempts, "vmaf": vmaf}
 
-        if vmaf > upper_bound:
-            crf += step  # höherer CRF = niedrigere Qualität/VMAF, wie beim QVBR-Pendant
-        elif vmaf < lower_bound:
-            crf -= step
+        if is_videotoolbox:
+            if vmaf > upper_bound:
+                crf -= step
+            elif vmaf < lower_bound:
+                crf += step
+        else:
+            if vmaf > upper_bound:
+                crf += step  # höherer CRF = niedrigere Qualität/VMAF
+            elif vmaf < lower_bound:
+                crf -= step
 
         crf = int(_clamp(crf, min_crf, max_crf))
 
-    if last_vmaf is not None and last_vmaf > upper_bound and crf < max_crf:
+    if last_vmaf is not None and ((is_videotoolbox and last_vmaf < lower_bound) or (not is_videotoolbox and last_vmaf > upper_bound)) and crf < max_crf:
         while crf < max_crf:
             crf = int(min(max_crf, crf + steps[-1]))
             vmaf = float(default_quality_estimator(plan, crf, requested_quality))
@@ -362,7 +373,7 @@ def recommend_quality_value(
     requested_quality: int = 22,
 ) -> int:
     if encoder.lower().strip() in ("ffmpeg", "qsv", "vcenc", "vceenc"):
-        result = find_quality_value_ffmpeg(plan, codec=codec, requested_quality=requested_quality)
+        result = find_quality_value_ffmpeg(plan, codec=codec, requested_quality=requested_quality, encoder=encoder)
         return int(result["quality_value"])
     else:
         result = find_quality_value_nvenc(plan, codec=codec, encoder=encoder, requested_quality=requested_quality)
@@ -427,8 +438,14 @@ def analyze_noise_and_quality(
         denoise_mode = "off"
         target_vmaf = 96.5
 
-    lower_bound = round(target_vmaf - 0.8, 1)
-    upper_bound = round(target_vmaf + 0.8, 1)
+    if IS_MACOS:
+        # Der macOS-VideoToolbox-Pfad bewertet TrueHDR bewusst mit einem niedrigeren Zielkorridor.
+        target_vmaf = 61.0
+        lower_bound = 54.0
+        upper_bound = 68.0
+    else:
+        lower_bound = round(target_vmaf - 0.8, 1)
+        upper_bound = round(target_vmaf + 0.8, 1)
 
     return {
         "noise_level": noise_level,
@@ -821,7 +838,10 @@ def calibrate_quality_vmaf(
 
         prev_q, prev_vmaf = current_q, vmaf_score
 
-        current_q = current_q + step if vmaf_score > upper_bound else current_q - step
+        if IS_MACOS and codec.lower().strip() in {"hevc", "h265", "h264"}:
+            current_q = current_q - step if vmaf_score > upper_bound else current_q + step
+        else:
+            current_q = current_q + step if vmaf_score > upper_bound else current_q - step
         current_q = int(_clamp(current_q, min_quality, max_quality))
 
     conservative_quality = _conservative_quality_value(

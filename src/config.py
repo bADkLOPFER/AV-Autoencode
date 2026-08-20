@@ -123,10 +123,15 @@ def load_config(config_file: Path = CONFIG_PATH) -> Dict[str, Any]:
             logger.error(f"Fehler beim Laden von {config_file.name}: {e}. Verwende Standardwerte.")
             config = default_cfg.copy()
 
-    # Automatische Ableitung der Ordnerstrukturen aus base_dir
+    # Inbox, Result und Done liegen auf dem Share; Work darf lokal überschrieben werden.
     base_path = Path(config.get("base_dir", "./")).resolve()
     config["inbox_dir"] = str(base_path / "Inbox")
-    config["work_dir"] = str(base_path / "Work")
+    configured_work_dir = Path(config.get("work_dir", ""))
+    if configured_work_dir.is_absolute():
+        work_path = configured_work_dir
+    else:
+        work_path = (PROJECT_ROOT / configured_work_dir).resolve() if configured_work_dir else base_path / "Work"
+    config["work_dir"] = str(work_path)
     config["result_dir"] = str(base_path / "Result")
     config["done_dir"] = str(base_path / "Done")
 
