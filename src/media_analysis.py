@@ -239,6 +239,33 @@ def default_quality_estimator(plan: Dict[str, Any], candidate_quality: int, requ
     return _clamp(estimate, lower_bound - 0.7, upper_bound + 0.7)
 
 
+def _quality_bounds(codec: str) -> Tuple[int, int]:
+    """Liefert die zulässigen Preflight-Qualitätsgrenzen je Codec."""
+    if codec.lower().strip() == "av1":
+        return 20, 34
+    return 15, 29
+
+
+def _conservative_quality_value(
+    attempts: List[Tuple[int, float]],
+    min_quality: int,
+    max_quality: int,
+    vmaf_threshold: float = 0.5,
+) -> Optional[int]:
+    """Wählt bei einer flachen VMAF-Kurve 30% zwischen schlechtem und gutem Q."""
+    if len(attempts) < 2:
+        return None
+
+    worst_quality = min(attempts, key=lambda item: item[1])[0]
+    best_quality = max(attempts, key=lambda item: item[1])[0]
+    vmaf_values = [vmaf for _, vmaf in attempts]
+    if max(vmaf_values) - min(vmaf_values) >= vmaf_threshold:
+        return None
+
+    conservative_quality = round(worst_quality - (worst_quality - best_quality) * 0.30)
+    return int(_clamp(conservative_quality, min_quality, max_quality))
+
+
 def find_quality_value_nvenc(
     plan: Dict[str, Any],
     codec: str = "hevc",
@@ -250,7 +277,7 @@ def find_quality_value_nvenc(
     lower_bound = float(plan.get("lower_bound", target_vmaf - 0.5))
     upper_bound = float(plan.get("upper_bound", target_vmaf + 0.5))
 
-    max_qvbr = 34 if codec == "av1" else 30
+    min_qvbr, max_qvbr = _quality_bounds(codec)
     qvbr = 26 if codec == "av1" else 22
     steps = [4, 2, 1]
     attempts: List[Dict[str, Any]] = []
@@ -270,7 +297,7 @@ def find_quality_value_nvenc(
         elif vmaf < lower_bound:
             qvbr -= step
 
-        qvbr = int(_clamp(qvbr, 1, max_qvbr))
+        qvbr = int(_clamp(qvbr, min_qvbr, max_qvbr))
 
     if last_vmaf is not None and last_vmaf > upper_bound and qvbr < max_qvbr:
         while qvbr < max_qvbr:
@@ -294,7 +321,7 @@ def find_quality_value_ffmpeg(
     lower_bound = float(plan.get("lower_bound", target_vmaf - 0.5))
     upper_bound = float(plan.get("upper_bound", target_vmaf + 0.5))
 
-    max_crf = 34 if codec == "av1" else 30
+    min_crf, max_crf = _quality_bounds(codec)
     crf = 27 if codec == "av1" else 22
     steps = [4, 2, 1]
     attempts: List[Dict[str, Any]] = []
@@ -313,7 +340,7 @@ def find_quality_value_ffmpeg(
         elif vmaf < lower_bound:
             crf -= step
 
-        crf = int(_clamp(crf, 1, max_crf))
+        crf = int(_clamp(crf, min_crf, max_crf))
 
     if last_vmaf is not None and last_vmaf > upper_bound and crf < max_crf:
         while crf < max_crf:
@@ -716,7 +743,8 @@ def calibrate_quality_vmaf(
     lower_bound = float(noise_plan.get("lower_bound", target_vmaf - 0.8))
     upper_bound = float(noise_plan.get("upper_bound", target_vmaf + 0.8))
 
-    current_q = initial_q
+    min_quality, max_quality = _quality_bounds(codec)
+    current_q = int(_clamp(initial_q, min_quality, max_quality))
     best_q = current_q
     min_delta = 999.0
     last_sample_duration = 0.0
@@ -724,8 +752,15 @@ def calibrate_quality_vmaf(
     prev_vmaf: Optional[float] = None
     max_attempts = 6
     default_step = 2
+    attempted_quality_values: set[int] = set()
+    measured_attempts: List[Tuple[int, float]] = []
 
     for attempt in range(1, max_attempts + 1):
+        if current_q in attempted_quality_values:
+            logger.warning("Qualitätswert Q=%d wurde bereits gemessen. Beende VMAF-Kalibrierung.", current_q)
+            break
+
+        attempted_quality_values.add(current_q)
         test_encoded = work_dir / f"{input_path.stem}_test_q{current_q}.mkv"
 
         test_cmd = build_encoder_args(
@@ -763,6 +798,7 @@ def calibrate_quality_vmaf(
             break
 
         print(f"    -> Ergebnis Versuch {attempt}: Q={current_q} -> VMAF: {vmaf_score:.2f} (Ziel: {lower_bound:.1f} - {upper_bound:.1f})")
+        measured_attempts.append((current_q, vmaf_score))
 
         delta = abs(vmaf_score - target_vmaf)
         if delta < min_delta:
@@ -781,16 +817,29 @@ def calibrate_quality_vmaf(
             slope = (prev_vmaf - vmaf_score) / (current_q - prev_q)
             if abs(slope) > 1e-3:
                 gap = vmaf_score - upper_bound if vmaf_score > upper_bound else lower_bound - vmaf_score
-                step = max(1, min(int(round(abs(gap / slope))), 8))
+                step = max(1, min(int(round(abs(gap / slope))), default_step))
 
         prev_q, prev_vmaf = current_q, vmaf_score
 
-        if vmaf_score > upper_bound:
-            current_q += step
-        else:
-            current_q -= step
+        current_q = current_q + step if vmaf_score > upper_bound else current_q - step
+        current_q = int(_clamp(current_q, min_quality, max_quality))
 
-        current_q = max(14, min(current_q, 36))
+    conservative_quality = _conservative_quality_value(
+        measured_attempts,
+        min_quality=min_quality,
+        max_quality=max_quality,
+    )
+    if conservative_quality is not None:
+        worst_quality = min(measured_attempts, key=lambda item: item[1])[0]
+        best_quality = max(measured_attempts, key=lambda item: item[1])[0]
+        logger.info(
+            "VMAF-Spanne unter 0.5. Verwende für den Haupt-Encode konservativ Q=%d "
+            "(30%% zwischen Q%d und Q%d).",
+            conservative_quality,
+            worst_quality,
+            best_quality,
+        )
+        best_q = conservative_quality
 
     print(f"[OK] Kalibrierung abgeschlossen. Optimaler Qualitätswert: Q={best_q}")
     return best_q, last_sample_duration

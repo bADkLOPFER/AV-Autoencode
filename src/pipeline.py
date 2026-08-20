@@ -12,11 +12,11 @@ from pathlib import Path
 
 try:
     from .config import CONFIG, resolve_encoder_choice
-    from .media_analysis import analyze_media, analyze_noise_and_quality, get_forced_subtitle_track, calibrate_quality_vmaf, recommend_quality_value, get_video_duration, cleanup_vmaf_samples
+    from .media_analysis import analyze_media, analyze_noise_and_quality, get_forced_subtitle_track, calibrate_quality_vmaf, recommend_quality_value, get_video_duration, cleanup_vmaf_samples, FFPROBE_BIN
     from .encoding import build_encoder_args, run_command
     from .utils import calculate_adjusted_speed_factor, estimate_total_duration, is_ffmpeg_hardware_encoder_available
 except ImportError:  # pragma: no cover
-    from media_analysis import analyze_media, analyze_noise_and_quality, get_forced_subtitle_track, calibrate_quality_vmaf, recommend_quality_value, get_video_duration, cleanup_vmaf_samples
+    from media_analysis import analyze_media, analyze_noise_and_quality, get_forced_subtitle_track, calibrate_quality_vmaf, recommend_quality_value, get_video_duration, cleanup_vmaf_samples, FFPROBE_BIN
     from encoding import build_encoder_args, run_command
     from config import CONFIG, resolve_encoder_choice
     from utils import calculate_adjusted_speed_factor, estimate_total_duration, is_ffmpeg_hardware_encoder_available
@@ -25,6 +25,27 @@ WORK_DIR = Path(CONFIG["work_dir"])
 RESULT_DIR = Path(CONFIG["result_dir"])
 DONE_DIR = Path(CONFIG["done_dir"])
 INBOX_DIR = Path(CONFIG["inbox_dir"])
+
+
+def _output_encoder_label(encoder: str) -> str:
+    return {
+        "nvencc": "NV",
+        "nvencc64": "NV",
+        "nvenc": "NV",
+        "qsv": "QSV",
+        "vcenc": "VCENC",
+        "vceenc": "VCENC",
+        "ffmpeg": "FFMPEG",
+    }.get(encoder.lower().strip(), encoder.upper().strip())
+
+
+def _output_codec_label(codec: str) -> str:
+    return {
+        "hevc": "HEVC",
+        "h265": "HEVC",
+        "av1": "AV1",
+        "h264": "H264",
+    }.get(codec.lower().strip(), codec.upper().strip())
 
 
 def process_job(
@@ -59,7 +80,9 @@ def process_job(
     job_json_path = WORK_DIR / f"{job_id}.job.json"
     job_log_path = WORK_DIR / f"{job_id}.log"
     work_input = WORK_DIR / input_path.name
-    work_output = WORK_DIR / f"{clean_stem}_encoded.mkv"
+    output_stem = input_path.stem
+    output_suffix = f"_{_output_encoder_label(encoder)}_{_output_codec_label(codec)}"
+    work_output = WORK_DIR / f"{output_stem}{output_suffix}.mkv"
 
     # Prüfen, ob die Datei aus der INBOX kommt
     is_from_inbox = (INBOX_DIR.resolve() in input_path.resolve().parents) or (input_path.parent.resolve() == INBOX_DIR.resolve())
@@ -161,7 +184,7 @@ def process_job(
         job_data["step"] = "ENCODING"
         logger.info(f"Starte Haupt-Encoding ({codec.upper()} via {encoder.upper()}, CQ: {final_quality})...")
 
-        source_duration = get_video_duration(work_input)
+        source_duration = get_video_duration(work_input, ffprobe_bin=Path(FFPROBE_BIN))
         if source_duration > 0 and sample_duration > 0:
             measured_speed = 20.0 / sample_duration
             filter_mode = "nnedi_slow" if is_interlaced else "none"
