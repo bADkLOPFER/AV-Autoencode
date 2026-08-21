@@ -13,11 +13,11 @@ from pathlib import Path
 
 try:
     from .config import CONFIG, IS_WINDOWS, resolve_encoder_choice
-    from .media_analysis import analyze_media, analyze_noise_and_quality, get_forced_subtitle_track, calibrate_quality_vmaf, recommend_quality_value, get_video_duration, cleanup_vmaf_samples, FFPROBE_BIN
+    from .media_analysis import analyze_media, analyze_noise_and_quality, get_forced_subtitle_track, get_forced_subtitle_track_by_packet_count, calibrate_quality_vmaf, recommend_quality_value, get_video_duration, cleanup_vmaf_samples, FFPROBE_BIN
     from .encoding import build_encoder_args, run_command
     from .utils import calculate_adjusted_speed_factor, estimate_total_duration, is_ffmpeg_hardware_encoder_available
 except ImportError:  # pragma: no cover
-    from media_analysis import analyze_media, analyze_noise_and_quality, get_forced_subtitle_track, calibrate_quality_vmaf, recommend_quality_value, get_video_duration, cleanup_vmaf_samples, FFPROBE_BIN
+    from media_analysis import analyze_media, analyze_noise_and_quality, get_forced_subtitle_track, get_forced_subtitle_track_by_packet_count, calibrate_quality_vmaf, recommend_quality_value, get_video_duration, cleanup_vmaf_samples, FFPROBE_BIN
     from encoding import build_encoder_args, run_command
     from config import CONFIG, IS_WINDOWS, resolve_encoder_choice
     from utils import calculate_adjusted_speed_factor, estimate_total_duration, is_ffmpeg_hardware_encoder_available
@@ -237,8 +237,20 @@ def process_job(
         configured_ai_mode = str(ai_mode or CONFIG.get("default_ai_choice", "2"))
         media_info = analyze_media(work_input, ai_mode=configured_ai_mode)
         ai_mode = media_info.get("ai_mode", configured_ai_mode)
-        forced_subtitle_track = get_forced_subtitle_track(media_info.get("subtitle_streams", []))
+        subtitle_streams = media_info.get("subtitle_streams", [])
+        forced_subtitle_track = get_forced_subtitle_track(subtitle_streams)
+        if forced_subtitle_track is None:
+            # Fallback: keine Disposition/Titel-Markierung vorhanden, aber evtl.
+            # eine auffällig kleine Spur (nur Signs/Fremdsprachen-Cues statt Volldialog).
+            forced_subtitle_track = get_forced_subtitle_track_by_packet_count(work_input, subtitle_streams)
+            if forced_subtitle_track is not None:
+                logger.info("Forced Sub per Paketanzahl-Heuristik erkannt: Spur %d", forced_subtitle_track)
         forced_subs = forced_subtitle_track is not None
+        forced_subtitle_codec = (
+            subtitle_streams[forced_subtitle_track].get("codec_name")
+            if forced_subtitle_track is not None
+            else None
+        )
         is_interlaced = media_info.get("is_interlaced", False)
 
         # SCHRITT 2: Preflight & VMAF
@@ -312,6 +324,7 @@ def process_job(
             subtitle_burn=forced_subs,
             use_nnedi=is_interlaced,
             subtitle_track=forced_subtitle_track,
+            subtitle_codec=forced_subtitle_codec,
         )
 
         # Encoder-Meldungen direkt in unseren job-spezifischen Logger leiten

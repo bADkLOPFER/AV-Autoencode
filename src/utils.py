@@ -232,7 +232,7 @@ def calculate_adjusted_speed_factor(test_speed_factor: float, ai_choice: str = "
     # 1. Hardware-spezifische Basis-Gewichtung relativ zu NVEncC
     hw_multipliers = {
         "nvenc": 1.0,          # Referenz (z.B. RTX-Grafikkarte)
-        "videotoolbox": 0.95,  # Apple Silicon Media Engine
+        "videotoolbox": 0.40,  # Apple Silicon Media Engine (empirisch: real ca. 2.3-3.3x länger als 0.95 vorhersagte)
         "qsv": 0.85,           # Intel QuickSync
         "amf": 0.80,           # AMD AMF
         "cpu": 0.15            # Reine Software-Berechnung (deutlich langsamer)

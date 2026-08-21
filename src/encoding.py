@@ -20,6 +20,10 @@ FFPROBE_BIN = CONFIG.get("tools", {}).get("ffprobe", "ffprobe")
 NVENCC_BIN = CONFIG.get("tools", {}).get("nvencc") or ("nvencc64.exe" if IS_WINDOWS else "nvencc")
 VMAF_BIN = CONFIG.get("tools", {}).get("vmaf", "vmaf.exe" if IS_WINDOWS else "vmaf")
 
+# FFmpegs "subtitles"-Filter (libass) rendert nur Text-Untertitel; Bitmap-Formate
+# (DVD/PGS/DVB) brauchen stattdessen "overlay", da libass sie nicht lesen kann.
+BITMAP_SUBTITLE_CODECS = {"dvd_subtitle", "hdmv_pgs_subtitle", "dvb_subtitle", "xsub"}
+
 def get_nvenc_base_args(
     codec: str = "hevc",
     qvbr: int = 22,
@@ -102,8 +106,17 @@ def get_ffmpeg_ai_mode_args(
         
         vf_filters.append("scale=-2:1080:flags=lanczos")
 
-    # TrueHDR Transformation / Metadaten für Choice 2 & 4
+    # Pseudo-HDR (inverse Tonemapping) für Choice 2 & 4: NVEncCs "--vpp-ngx-truehdr" ist ein
+    # trainiertes KI-Modell dafür gibt es in FFmpeg keine Entsprechung. Als Annäherung heben wir
+    # Kontrast/Sättigung leicht an und expandieren die SDR-Samples per zscale linear in den
+    # PQ/BT.2020-Raum, statt nur das Pixelformat zu ändern und HDR-Metadaten auf unveränderte
+    # SDR-Werte zu kleben (das würde am Display zu falscher, zu dunkler Darstellung führen).
     if ai_choice in ("2", "4"):
+        vf_filters.append("eq=contrast=1.05:saturation=0.92")
+        # Quelle wird als BT.709 SDR angenommen (Standard für SD/HD-Material ohne HDR-Tags)
+        vf_filters.append("zscale=t=linear:npl=100:pin=bt709:tin=bt709:min=bt709:p=bt709")
+        vf_filters.append("format=gbrpf32le")
+        vf_filters.append("zscale=p=bt2020:t=smpte2084:m=bt2020nc:range=full")
         # p010le ist das native 10-bit Format für Apple Silicon Hardware-Encoder
         vf_filters.append("format=p010" if IS_MACOS else "format=yuv420p10le")
         extra_cmd.extend([
@@ -174,6 +187,7 @@ def build_encoder_args(
     audio_mode: str = "copy",
     subtitle_burn: bool = False,  # <-- JETZT EXPILZIT ABGEFANGEN
     subtitle_track: Optional[int] = None,  # 0-basierter Index des Subtitle-Streams, der gebrannt werden soll
+    subtitle_codec: Optional[str] = None,  # Codec-Name des Subtitle-Streams (z.B. "dvd_subtitle", "ass")
     extra_args: Optional[Sequence[str]] = None,
     is_preflight: bool = False,
     **kwargs  # <-- Fängt alle weiteren Übergabeparameter aus pipeline.py ab!
@@ -219,7 +233,7 @@ def build_encoder_args(
 
     # --- FFMPEG / HARDWARE-ENCODER-PFAD ---
     elif encoder_clean in ("ffmpeg", "qsv", "vcenc", "vceenc"):
-        cmd = [str(FFMPEG_BIN), "-hide_banner", "-loglevel", "error", "-y", "-i", str(input_path), "-map", "0", "-map_chapters", "0"]
+        cmd = [str(FFMPEG_BIN), "-hide_banner", "-loglevel", "error", "-y", "-i", str(input_path)]
 
         ffmpeg_encoder = None
         if encoder_clean == "qsv":
@@ -237,13 +251,31 @@ def build_encoder_args(
         if ffmpeg_ai["vf_string"]:
             vf_list.append(ffmpeg_ai["vf_string"])
 
-        # Subtitle Hardburn falls aktiviert: nur der erste Subtitle-Track (dieser enthält die forced Cues)
-        if subtitle_burn and not is_preflight:
-            ffmpeg_sub_index = subtitle_track if subtitle_track is not None else 0
-            vf_list.append(f"subtitles='{input_path}':si={ffmpeg_sub_index}")
+        do_burn = subtitle_burn and not is_preflight
+        ffmpeg_sub_index = subtitle_track if subtitle_track is not None else 0
+        is_bitmap_subtitle = str(subtitle_codec or "").lower() in BITMAP_SUBTITLE_CODECS
 
-        if vf_list:
-            cmd.extend(["-vf", ",".join(vf_list)])
+        if do_burn and is_bitmap_subtitle:
+            # Bitmap-Untertitel (DVD/PGS/DVB) können nicht von "subtitles" (libass) gelesen
+            # werden. Stattdessen wird die dekodierte Bitmap-Spur per "overlay" auf das noch
+            # unskalierte Rohbild gebrannt, bevor Deinterlace/Scale/HDR-Filter laufen, damit
+            # Overlay- und Video-Auflösung zueinander passen.
+            filter_complex_parts = [f"[0:v:0][0:s:{ffmpeg_sub_index}]overlay[subbed]"]
+            stage_label = "subbed"
+            if vf_list:
+                filter_complex_parts.append(f"[{stage_label}]{','.join(vf_list)}[vout]")
+                stage_label = "vout"
+            cmd.extend(["-filter_complex", ";".join(filter_complex_parts), "-map", f"[{stage_label}]"])
+            cmd.extend(["-map", "0:a?", "-map_chapters", "0"])
+        else:
+            if do_burn:
+                # Text-Untertitel (SRT/ASS/mov_text): "subtitles" rendert per libass, liest
+                # die Datei unabhängig vom Stream-Mapping.
+                vf_list.append(f"subtitles='{input_path}':si={ffmpeg_sub_index}")
+
+            cmd.extend(["-map", "0", "-map_chapters", "0"])
+            if vf_list:
+                cmd.extend(["-vf", ",".join(vf_list)])
 
         # Codec-Einstellung
         if ffmpeg_encoder:

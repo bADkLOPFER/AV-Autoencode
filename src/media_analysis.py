@@ -327,7 +327,7 @@ def find_quality_value_ffmpeg(
 
     min_crf, max_crf = _quality_bounds(codec)
     is_videotoolbox = IS_MACOS and encoder.lower().strip() == "ffmpeg" and codec.lower().strip() in {"hevc", "h265", "h264"}
-    crf = 50 if is_videotoolbox else (27 if codec == "av1" else 22)
+    crf = 56 if is_videotoolbox else (27 if codec == "av1" else 22)
     steps = [4, 2, 1]
     attempts: List[Dict[str, Any]] = []
     last_vmaf: Optional[float] = None
@@ -880,3 +880,61 @@ def get_forced_subtitle_track(subtitle_streams: List[Dict[str, Any]]) -> Optiona
 def has_forced_subtitles(subtitle_streams: List[Dict[str, Any]]) -> bool:
     """Prüft, ob erzwungene Untertitelspuren vorhanden sind."""
     return get_forced_subtitle_track(subtitle_streams) is not None
+
+
+def get_forced_subtitle_track_by_packet_count(
+    file_path: Path,
+    subtitle_streams: List[Dict[str, Any]],
+    ffprobe_bin: Optional[Path] = None,
+    ratio_threshold: float = 0.3,
+) -> Optional[int]:
+    """Fallback-Erkennung für Forced Subs ohne Disposition/Titel-Tag.
+
+    Manche Muxer setzen weder das Forced-Bit noch einen Titel-Tag auf der
+    Forced-Spur. Enthält eine Spur deutlich (< ratio_threshold der Median-
+    Paketanzahl der übrigen Spuren) weniger Cues als alle anderen, aber mehr
+    als 0, ist das ein starkes Indiz für eine Signs/Forced-Spur (nur wenige
+    eingeblendete Fremdsprachen-Cues statt der vollständigen Dialogspur).
+    """
+    if len(subtitle_streams) < 2:
+        return None
+
+    probe_bin = str(ffprobe_bin or FFPROBE_BIN)
+    cmd = [
+        probe_bin, "-v", "error",
+        "-select_streams", "s",
+        "-show_entries", "stream=index,nb_read_packets",
+        "-count_packets",
+        "-print_format", "json",
+        str(file_path),
+    ]
+
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        data = json.loads(res.stdout)
+    except Exception as exc:
+        logger.warning("Packet-Count-Analyse der Untertitel fehlgeschlagen: %s", exc)
+        return None
+
+    counts_by_index = {
+        _safe_int(s.get("index"), -1): _safe_int(s.get("nb_read_packets"), 0)
+        for s in data.get("streams", [])
+    }
+
+    counts = [
+        (position, counts_by_index.get(_safe_int(stream.get("index"), -1), 0))
+        for position, stream in enumerate(subtitle_streams)
+    ]
+    counts = [(position, count) for position, count in counts if count > 0]
+    if len(counts) < 2:
+        return None
+
+    counts.sort(key=lambda item: item[1])
+    candidate_position, candidate_count = counts[0]
+    rest = sorted(count for _, count in counts[1:])
+    median_rest = rest[len(rest) // 2] if len(rest) % 2 == 1 else (rest[len(rest) // 2 - 1] + rest[len(rest) // 2]) / 2
+
+    if median_rest > 0 and candidate_count <= ratio_threshold * median_rest:
+        return candidate_position
+
+    return None
