@@ -438,14 +438,8 @@ def analyze_noise_and_quality(
         denoise_mode = "off"
         target_vmaf = 96.5
 
-    if IS_MACOS:
-        # Der macOS-VideoToolbox-Pfad bewertet TrueHDR bewusst mit einem niedrigeren Zielkorridor.
-        target_vmaf = 61.0
-        lower_bound = 54.0
-        upper_bound = 68.0
-    else:
-        lower_bound = round(target_vmaf - 0.8, 1)
-        upper_bound = round(target_vmaf + 0.8, 1)
+    lower_bound = round(target_vmaf - 0.8, 1)
+    upper_bound = round(target_vmaf + 0.8, 1)
 
     return {
         "noise_level": noise_level,

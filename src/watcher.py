@@ -26,22 +26,23 @@ if not verify_tools(CONFIG):
     sys.exit(1)
 
 def is_file_ready(file_path: Path, check_interval: int = 3, stable_checks: int = 2) -> bool:
-    """Prüft stabile Größe, Änderungszeit und Lesbarkeit eines Videocontainers."""
+    """Prüft stabile Größe und Lesbarkeit eines Videocontainers.
+
+    Nur die Dateigröße wird verglichen: st_mtime_ns ist auf manchen
+    Netzwerkfreigaben (SMB/NFS) leicht instabil und würde die Erkennung
+    sonst nie konvergieren lassen, obwohl die Größe längst konstant ist.
+    """
     try:
-        previous = None
-        for _ in range(stable_checks):
-            stat_result = file_path.stat()
-            current = (stat_result.st_size, stat_result.st_mtime_ns)
-            if current[0] <= 0 or previous != current:
-                previous = current
-                time.sleep(check_interval)
-                continue
-
+        stable_count = 0
+        last_size = -1
+        while stable_count < stable_checks:
+            size = file_path.stat().st_size
+            if size > 0 and size == last_size:
+                stable_count += 1
+            else:
+                stable_count = 0
+            last_size = size
             time.sleep(check_interval)
-
-        final_stat = file_path.stat()
-        if final_stat.st_size <= 0 or previous != (final_stat.st_size, final_stat.st_mtime_ns):
-            return False
 
         probe = subprocess.run(
             [

@@ -272,9 +272,11 @@ def build_encoder_args(
         else:
             cmd.extend(["-c:a", "copy"])
 
-        # Untertitel
-        if not subtitle_burn:
-            cmd.extend(["-c:s", "copy"])
+        # Untertitel: werden nie als separater Stream übernommen. Forced Subs werden
+        # oben bereits per -vf subtitles=... hart ins Bild gebrannt (liest die Datei
+        # unabhängig vom Stream-Mapping); alle anderen Untertitel werden verworfen,
+        # damit Player sie nicht automatisch (z.B. via Default-Flag) einblenden.
+        cmd.append("-sn")
 
         # HDR Metadaten (nur beim Haupt-Encode)
         if not is_preflight:

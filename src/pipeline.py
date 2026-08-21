@@ -38,11 +38,16 @@ def _copy_stable_input(source: Path, destination: Path) -> None:
             stable_checks += 1
         else:
             stable_size = current_size
-            stable_checks = 1 if current_size > 0 else 0
+            stable_checks = 0
+        print(
+            f"[...] Warte auf stabile Quelle {source.name}: "
+            f"{current_size / 1024 / 1024:.0f} MiB ({stable_checks}/5 stabil)"
+        )
         if stable_checks < 5:
             time.sleep(5)
 
-    destination.unlink(missing_ok=True)
+    # Destination NICHT löschen: robocopy /Z bzw. rsync --partial --inplace
+    # sollen an einer bereits vorhandenen Teil-Kopie fortsetzen können.
     destination.parent.mkdir(parents=True, exist_ok=True)
 
     if IS_WINDOWS:
@@ -51,54 +56,72 @@ def _copy_stable_input(source: Path, destination: Path) -> None:
             str(source.parent),
             str(destination.parent),
             source.name,
-            "/J", "/Z", "/R:2", "/W:5", "/NFL", "/NDL", "/NP",
+            # /IS: auch Dateien mit gleicher Größe/Zeitstempel erneut kopieren,
+            # statt einen zufällig gleich großen Rest als "fertig" zu akzeptieren.
+            "/J", "/Z", "/IS", "/R:2", "/W:5", "/NFL", "/NDL", "/NP",
         ]
     else:
         if shutil.which("rsync") is None:
             raise FileNotFoundError("rsync wurde nicht gefunden")
         command = [
-            "rsync", "--archive", "--partial", "--inplace",
+            # --checksum: Inhalt statt nur Größe/mtime vergleichen, damit ein zufällig
+            # gleich großer Rest in Work nicht fälschlich als vollständig gilt.
+            "rsync", "--archive", "--partial", "--inplace", "--checksum",
             str(source), str(destination),
         ]
 
-    copy_process = subprocess.Popen(
-        command,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.STDOUT,
-    )
-    source_changed = False
-    while copy_process.poll() is None:
-        time.sleep(5)
-        current_source_size = source.stat().st_size
-        current_destination_size = destination.stat().st_size if destination.exists() else 0
-        print(
-            f"[...] Kopiere {source.name}: "
-            f"{current_destination_size / 1024 / 1024:.0f} / "
-            f"{current_source_size / 1024 / 1024:.0f} MiB"
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        copy_process = subprocess.Popen(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
         )
-        if current_source_size != stable_size:
-            source_changed = True
-            copy_process.terminate()
-            break
+        source_changed = False
+        while copy_process.poll() is None:
+            time.sleep(5)
+            current_source_size = source.stat().st_size
+            current_destination_size = destination.stat().st_size if destination.exists() else 0
+            if current_destination_size >= current_source_size > 0:
+                # Größe schon identisch: rsync/robocopy prüfen jetzt den Inhalt
+                # (--checksum bzw. /IS), das kann bei großen Dateien dauern.
+                print(f"[...] Prüfe Inhalt von {source.name} (Checksum-Vergleich läuft)...")
+            else:
+                print(
+                    f"[...] Kopiere {source.name}: "
+                    f"{current_destination_size / 1024 / 1024:.0f} / "
+                    f"{current_source_size / 1024 / 1024:.0f} MiB"
+                )
+            if current_source_size != stable_size:
+                source_changed = True
+                copy_process.terminate()
+                break
 
-    if source_changed:
-        copy_process.wait()
-        destination.unlink(missing_ok=True)
-        raise IOError(f"Quelle wurde während des Kopierens verändert: {source.name}")
+        return_code = copy_process.wait()
 
-    return_code = copy_process.wait()
-    if (IS_WINDOWS and return_code >= 8) or (not IS_WINDOWS and return_code != 0):
-        destination.unlink(missing_ok=True)
-        raise IOError(f"Kopieren nach Work fehlgeschlagen (Exit-Code {return_code}): {source.name}")
+        if source_changed:
+            # Quelle ist während des Kopierens weitergewachsen: robocopy /Z bzw.
+            # rsync --partial --inplace können ab der vorhandenen Teil-Kopie fortsetzen,
+            # statt komplett neu zu beginnen.
+            stable_size = source.stat().st_size
+            print(f"[...] Quelle hat sich verändert, setze Kopiervorgang fort (Versuch {attempt}/{max_attempts})...")
+            continue
 
-    source_size = source.stat().st_size
-    destination_size = destination.stat().st_size
-    if source_size != stable_size or destination_size != source_size:
-        destination.unlink(missing_ok=True)
-        raise IOError(
-            f"Quelle wurde während des Kopierens verändert: "
-            f"Quelle {source_size} Bytes, Ziel {destination_size} Bytes"
-        )
+        if (IS_WINDOWS and return_code >= 8) or (not IS_WINDOWS and return_code != 0):
+            destination.unlink(missing_ok=True)
+            raise IOError(f"Kopieren nach Work fehlgeschlagen (Exit-Code {return_code}): {source.name}")
+
+        source_size = source.stat().st_size
+        destination_size = destination.stat().st_size
+        if source_size != stable_size or destination_size != source_size:
+            stable_size = source_size
+            print(f"[...] Quelle hat sich nach Kopierende noch verändert, setze fort (Versuch {attempt}/{max_attempts})...")
+            continue
+
+        return
+
+    destination.unlink(missing_ok=True)
+    raise IOError(f"Quelle wurde während des Kopierens wiederholt verändert: {source.name}")
 
 
 def _output_encoder_label(encoder: str) -> str:
