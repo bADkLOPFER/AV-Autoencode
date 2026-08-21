@@ -126,11 +126,14 @@ def load_config(config_file: Path = CONFIG_PATH) -> Dict[str, Any]:
     # Inbox, Result und Done liegen auf dem Share; Work darf lokal überschrieben werden.
     base_path = Path(config.get("base_dir", "./")).resolve()
     config["inbox_dir"] = str(base_path / "Inbox")
-    configured_work_dir = Path(config.get("work_dir", ""))
-    if configured_work_dir.is_absolute():
+    configured_work_dir_value = config.get("work_dir")
+    configured_work_dir = Path(configured_work_dir_value) if configured_work_dir_value else None
+    if configured_work_dir is None:
+        work_path = PROJECT_ROOT / "Work"
+    elif configured_work_dir.is_absolute():
         work_path = configured_work_dir
     else:
-        work_path = (PROJECT_ROOT / configured_work_dir).resolve() if configured_work_dir else base_path / "Work"
+        work_path = (PROJECT_ROOT / configured_work_dir).resolve()
     config["work_dir"] = str(work_path)
     config["result_dir"] = str(base_path / "Result")
     config["done_dir"] = str(base_path / "Done")

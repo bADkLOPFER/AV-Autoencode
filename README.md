@@ -26,7 +26,7 @@ Das Projekt erwartet seine Abhängigkeiten in einer strukturierten Umgebung:
 
 ```text
 📁 AV-Encode/
-├── 📁 video_tool/
+├── 📁 src/
 │   ├── 📄 server.py             <-- FastAPI Backend & WebSocket-Manager
 │   ├── 📄 main.py               <-- Encoding-Pipeline & Wrapper
 │   ├── 📄 config.py             <-- Workflow-Defaults & Konfiguration
@@ -49,7 +49,7 @@ Das Projekt erwartet seine Abhängigkeiten in einer strukturierten Umgebung:
 1. Starte den FastAPI-Server über das Terminal (im Projektverzeichnis):
 ```
 Bash
-uvicorn video_tool.server:app --reload --port 8265
+uvicorn src.server:app --reload --port 8265
 ```
 2. Öffne deinen Browser und rufe die angezeigte Adresse auf (z. B. http://127.0.0.1:8265).
 
@@ -63,7 +63,7 @@ uvicorn video_tool.server:app --reload --port 8265
 Du kannst das Skript weiterhin direkt über Python oder die PowerShell ausführen:
 ```
 PowerShell
-python video_tool/main.py --input "C:\Videos\MeinFilm.mkv" --codec hevc
+python -m src.main "C:\Videos\MeinFilm.mkv" --codec hevc
 ```
 
 ---

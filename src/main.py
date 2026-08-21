@@ -3,7 +3,10 @@ import sys
 import logging
 from pathlib import Path
 
-from pipeline import process_job
+try:
+    from .pipeline import process_job
+except ImportError:  # pragma: no cover
+    from pipeline import process_job
 
 # Optionales Logging für die CLI-Ebene
 logging.basicConfig(

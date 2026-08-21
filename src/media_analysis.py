@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
-    from config import CONFIG, IS_MACOS, IS_WINDOWS
+    from .config import CONFIG, IS_MACOS, IS_WINDOWS
     from .encoding import build_encoder_args, run_command
     from .utils import _clamp, ensure_dir, logger
 except ImportError:  # pragma: no cover

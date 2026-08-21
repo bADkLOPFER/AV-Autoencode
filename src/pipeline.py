@@ -239,6 +239,10 @@ def process_job(
         ai_mode = media_info.get("ai_mode", configured_ai_mode)
         subtitle_streams = media_info.get("subtitle_streams", [])
         forced_subtitle_track = get_forced_subtitle_track(subtitle_streams)
+        subtitle_forced_only = (
+            forced_subtitle_track is not None
+            and str(subtitle_streams[forced_subtitle_track].get("disposition", {}).get("forced", 0)) == "1"
+        )
         if forced_subtitle_track is None:
             # Fallback: keine Disposition/Titel-Markierung vorhanden, aber evtl.
             # eine auffällig kleine Spur (nur Signs/Fremdsprachen-Cues statt Volldialog).
@@ -322,6 +326,7 @@ def process_job(
             ai_choice=ai_mode,
             audio_mode="copy",
             subtitle_burn=forced_subs,
+            subtitle_forced_only=subtitle_forced_only,
             use_nnedi=is_interlaced,
             subtitle_track=forced_subtitle_track,
             subtitle_codec=forced_subtitle_codec,

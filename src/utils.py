@@ -189,7 +189,7 @@ def detect_hardware(ffmpeg_bin: Optional[str | Path] = None) -> HWProfile:
     )
 
 def setup_logging(level: int = logging.INFO) -> logging.Logger:
-    logger = logging.getLogger("video_tool")
+    logger = logging.getLogger("src")
     if logger.handlers:
         logger.setLevel(level)
         return logger

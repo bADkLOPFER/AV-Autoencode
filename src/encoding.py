@@ -186,6 +186,7 @@ def build_encoder_args(
     denoise_mode: str = "off",
     audio_mode: str = "copy",
     subtitle_burn: bool = False,  # <-- JETZT EXPILZIT ABGEFANGEN
+    subtitle_forced_only: bool = True,
     subtitle_track: Optional[int] = None,  # 0-basierter Index des Subtitle-Streams, der gebrannt werden soll
     subtitle_codec: Optional[str] = None,  # Codec-Name des Subtitle-Streams (z.B. "dvd_subtitle", "ass")
     extra_args: Optional[Sequence[str]] = None,
@@ -216,9 +217,11 @@ def build_encoder_args(
 
         subburn_args = []
         if subtitle_burn and not is_preflight:
-            # Immer der erste Subtitle-Track (1-basiert bei NVEncC); nur dessen forced Cues brennen
             nvenc_track = (subtitle_track if subtitle_track is not None else 0) + 1
-            subburn_args = ["--vpp-subburn", f"track={nvenc_track},forced_subs_only=on"]
+            subburn_options = f"track={nvenc_track}"
+            if subtitle_forced_only:
+                subburn_options += ",forced_subs_only=on"
+            subburn_args = ["--vpp-subburn", subburn_options]
 
         cmd = [
             NVENCC_BIN,
