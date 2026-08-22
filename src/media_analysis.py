@@ -327,7 +327,7 @@ def find_quality_value_ffmpeg(
 
     min_crf, max_crf = _quality_bounds(codec)
     is_videotoolbox = IS_MACOS and encoder.lower().strip() == "ffmpeg" and codec.lower().strip() in {"hevc", "h265", "h264"}
-    crf = 56 if is_videotoolbox else (27 if codec == "av1" else 22)
+    crf = 62 if is_videotoolbox else (27 if codec == "av1" else 22)
     steps = [4, 2, 1]
     attempts: List[Dict[str, Any]] = []
     last_vmaf: Optional[float] = None
@@ -425,11 +425,11 @@ def analyze_noise_and_quality(
         noise_level = "heavy"
         denoise_mode = "heavy"
         target_vmaf = 93.0
-    elif delta_weighted > 30.0:
+    elif delta_weighted > 25.0:
         noise_level = "medium"
         denoise_mode = "medium"
         target_vmaf = 94.5
-    elif delta_weighted > 20.0:
+    elif delta_weighted > 15.0:
         noise_level = "light"
         denoise_mode = "light"
         target_vmaf = 95.5

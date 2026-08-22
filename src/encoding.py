@@ -274,9 +274,13 @@ def build_encoder_args(
             if do_burn:
                 # Text-Untertitel (SRT/ASS/mov_text): "subtitles" rendert per libass, liest
                 # die Datei unabhängig vom Stream-Mapping.
-                vf_list.append(f"subtitles='{input_path}':si={ffmpeg_sub_index}")
+                # vf_list.append(f"subtitles='{input_path}':si={ffmpeg_sub_index}")
+                escaped_path = str(input_path).replace("\\", "/").replace(":", "\\:")
+                vf_list.append(f"subtitles='{escaped_path}':si={ffmpeg_sub_index}")
 
-            cmd.extend(["-map", "0", "-map_chapters", "0"])
+            # cmd.extend(["-map", "0", "-map_chapters", "0"])
+            cmd.extend(["-map", "0:v:0", "-map", "0:a?", "-map_chapters", "0"])
+
             if vf_list:
                 cmd.extend(["-vf", ",".join(vf_list)])
 
