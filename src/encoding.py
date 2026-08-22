@@ -276,7 +276,7 @@ def build_encoder_args(
                 # die Datei unabhängig vom Stream-Mapping.
                 # vf_list.append(f"subtitles='{input_path}':si={ffmpeg_sub_index}")
                 escaped_path = str(input_path).replace("\\", "/").replace(":", "\\:")
-                vf_list.append(f"subtitles='{escaped_path}':si={ffmpeg_sub_index}")
+                vf_list.append(f"subtitles='{escaped_path}':si={ffmpeg_sub_index}:force_style='Fontname=Helvetica,FontSize=18'")
 
             # cmd.extend(["-map", "0", "-map_chapters", "0"])
             cmd.extend(["-map", "0:v:0", "-map", "0:a?", "-map_chapters", "0"])
