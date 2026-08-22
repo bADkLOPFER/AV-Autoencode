@@ -32,7 +32,7 @@ def _copy_stable_input(source: Path, destination: Path) -> None:
     """Kopiert eine fertige Datei per Robocopy/Rsync und überwacht den Fortschritt."""
     stable_size = None
     stable_checks = 0
-    while stable_checks < 5:
+    while stable_checks < 3:  # Warte auf 3 aufeinanderfolgende stabile Messungen
         current_size = source.stat().st_size
         if current_size > 0 and current_size == stable_size:
             stable_checks += 1
@@ -41,76 +41,104 @@ def _copy_stable_input(source: Path, destination: Path) -> None:
             stable_checks = 0
         print(
             f"[...] Warte auf stabile Quelle {source.name}: "
-            f"{current_size / 1024 / 1024:.0f} MiB ({stable_checks}/5 stabil)"
+            f"{current_size / 1024 / 1024:.0f} MiB ({stable_checks}/3 stabil)"
         )
-        if stable_checks < 5:
+        if stable_checks < 3:
             time.sleep(5)
 
-    # Destination NICHT löschen: robocopy /Z bzw. rsync --partial --inplace
-    # sollen an einer bereits vorhandenen Teil-Kopie fortsetzen können.
     destination.parent.mkdir(parents=True, exist_ok=True)
 
-    if IS_WINDOWS:
-        command = [
-            "robocopy",
-            str(source.parent),
-            str(destination.parent),
-            source.name,
-            # /IS: auch Dateien mit gleicher Größe/Zeitstempel erneut kopieren,
-            # statt einen zufällig gleich großen Rest als "fertig" zu akzeptieren.
-            "/J", "/Z", "/IS", "/R:2", "/W:5", "/NFL", "/NDL", "/NP",
-        ]
-    else:
-        if shutil.which("rsync") is None:
-            raise FileNotFoundError("rsync wurde nicht gefunden")
-        command = [
-            # --checksum: Inhalt statt nur Größe/mtime vergleichen, damit ein zufällig
-            # gleich großer Rest in Work nicht fälschlich als vollständig gilt.
-            "rsync", "--archive", "--partial", "--inplace", "--checksum",
-            str(source), str(destination),
-        ]
+    # PRE-CHECK: Ist die Datei im Ziel bereits vollkommen identisch (Größe)?
+    if destination.exists() and destination.stat().st_size == stable_size:
+        print(f"[OK] Zieldatei {destination.name} existiert bereits. Überspringe Kopiervorgang.")
+        return
 
     max_attempts = 3
     for attempt in range(1, max_attempts + 1):
-        copy_process = subprocess.Popen(
-            command,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.STDOUT,
-        )
-        source_changed = False
-        while copy_process.poll() is None:
-            time.sleep(5)
-            current_source_size = source.stat().st_size
-            current_destination_size = destination.stat().st_size if destination.exists() else 0
-            if current_destination_size >= current_source_size > 0:
-                # Größe schon identisch: rsync/robocopy prüfen jetzt den Inhalt
-                # (--checksum bzw. /IS), das kann bei großen Dateien dauern.
-                print(f"[...] Prüfe Inhalt von {source.name} (Checksum-Vergleich läuft)...")
-            else:
+        if IS_WINDOWS:
+            # Robocopy: Generiert Prozentangaben im stdout
+            command = [
+                "robocopy",
+                str(source.parent),
+                str(destination.parent),
+                source.name,
+                "/J", "/Z", "/R:2", "/W:5",
+                "/NJH", "/NJS", "/NDL", "/NC", "/NS"  # Entferne unnötigen Header-Müll
+            ]
+            
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+
+            last_percent = ""
+            while True:
+                # Robocopy gibt Fortschritte mit Replay-Carriage-Returns (\r) aus
+                char = process.stdout.read(1) if process.stdout else ""
+                if not char and process.poll() is not None:
+                    break
+                
+                # Wir filtern nach Prozentzeichen in der Zeile
+                if char in ("\r", "\n"):
+                    line = last_percent.strip()
+                    if "%" in line:
+                        print(f"[...] Kopiere {source.name} (Robocopy): {line}", end="\r")
+                    last_percent = ""
+                else:
+                    last_percent += char
+
+            return_code = process.wait()
+
+        else:
+            # Linux/macOS rsync mit Dateigrößen-Polling
+            if shutil.which("rsync") is None:
+                raise FileNotFoundError("rsync wurde nicht gefunden")
+            
+            command = [
+                "rsync", "--archive", "--partial", "--inplace",
+                str(source), str(destination),
+            ]
+
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.STDOUT,
+            )
+
+            source_changed = False
+            while process.poll() is None:
+                time.sleep(5)
+                current_source_size = source.stat().st_size
+                current_destination_size = destination.stat().st_size if destination.exists() else 0
+                
                 print(
                     f"[...] Kopiere {source.name}: "
                     f"{current_destination_size / 1024 / 1024:.0f} / "
                     f"{current_source_size / 1024 / 1024:.0f} MiB"
                 )
-            if current_source_size != stable_size:
-                source_changed = True
-                copy_process.terminate()
-                break
 
-        return_code = copy_process.wait()
+                if current_source_size != stable_size:
+                    source_changed = True
+                    process.terminate()
+                    break
 
-        if source_changed:
-            # Quelle ist während des Kopierens weitergewachsen: robocopy /Z bzw.
-            # rsync --partial --inplace können ab der vorhandenen Teil-Kopie fortsetzen,
-            # statt komplett neu zu beginnen.
-            stable_size = source.stat().st_size
-            print(f"[...] Quelle hat sich verändert, setze Kopiervorgang fort (Versuch {attempt}/{max_attempts})...")
-            continue
+            return_code = process.wait()
 
+            if source_changed:
+                stable_size = source.stat().st_size
+                print(f"[...] Quelle hat sich verändert, setze fort (Versuch {attempt}/{max_attempts})...")
+                continue
+
+        # Validierung des Exit-Codes
+        # Robocopy: Codes < 8 bedeuten Erfolg (1 = Datei erfolgreich kopiert, 0 = Keine Änderungen)
         if (IS_WINDOWS and return_code >= 8) or (not IS_WINDOWS and return_code != 0):
             destination.unlink(missing_ok=True)
             raise IOError(f"Kopieren nach Work fehlgeschlagen (Exit-Code {return_code}): {source.name}")
 
+        # Finale Größenprüfung
         source_size = source.stat().st_size
         destination_size = destination.stat().st_size
         if source_size != stable_size or destination_size != source_size:
@@ -118,11 +146,11 @@ def _copy_stable_input(source: Path, destination: Path) -> None:
             print(f"[...] Quelle hat sich nach Kopierende noch verändert, setze fort (Versuch {attempt}/{max_attempts})...")
             continue
 
+        print(f"\n[OK] Kopieren von {source.name} erfolgreich beendet.")
         return
 
     destination.unlink(missing_ok=True)
     raise IOError(f"Quelle wurde während des Kopierens wiederholt verändert: {source.name}")
-
 
 def _output_encoder_label(encoder: str) -> str:
     return {
@@ -249,6 +277,10 @@ def process_job(
             forced_subtitle_track = get_forced_subtitle_track_by_packet_count(work_input, subtitle_streams)
             if forced_subtitle_track is not None:
                 logger.info("Forced Sub per Paketanzahl-Heuristik erkannt: Spur %d", forced_subtitle_track)
+            else:
+                logger.info("Keine Forced Sub-Spur erkannt.")
+        else:
+            logger.info("Forced Sub per Disposition erkannt: Spur %d", forced_subtitle_track)
         forced_subs = forced_subtitle_track is not None
         forced_subtitle_codec = (
             subtitle_streams[forced_subtitle_track].get("codec_name")
@@ -263,6 +295,7 @@ def process_job(
 
         preflight_plan = analyze_noise_and_quality(
             file_path=work_input,
+            bitrate_info=media_info.get("bitrate_info"),
             work_dir=WORK_DIR,
             encoder=encoder,
             codec=codec,
@@ -301,7 +334,7 @@ def process_job(
 
         source_duration = get_video_duration(work_input, ffprobe_bin=Path(FFPROBE_BIN))
         if source_duration > 0 and sample_duration > 0:
-            measured_speed = 20.0 / sample_duration
+            measured_speed = 45.0 / sample_duration
             filter_mode = "nnedi_slow" if is_interlaced else "none"
             adjusted_speed = calculate_adjusted_speed_factor(measured_speed, filter_mode)
             estimated_duration = estimate_total_duration(source_duration, adjusted_speed)

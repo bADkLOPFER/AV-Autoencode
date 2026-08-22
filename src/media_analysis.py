@@ -396,8 +396,11 @@ def analyze_noise_and_quality(
     ffprobe_bin = Path(ffprobe_path) if ffprobe_path else FFPROBE_BIN
     target_work_dir = Path(work_dir) if work_dir else WORK_DIR
 
-    if not bitrate_info:
+    if bitrate_info is None or "peak_timestamp_sec" not in bitrate_info:
+        logger.info("Bitrate-Info fehlt oder unvollständig. Starte Paket-Scan...")
         bitrate_info = get_bitrate_info(file_path, ffprobe_bin=ffprobe_bin)
+    else:
+        logger.debug("Nutze bereits ermittelte Bitrate-Info aus analyze_media.")
 
     duration = get_video_duration(file_path, ffprobe_bin=ffprobe_bin)
     peak_time = _safe_float(bitrate_info.get("peak_timestamp_sec"), duration * 0.5 if duration > 0 else 0.0)
@@ -585,6 +588,73 @@ def analyze_media(
         "ai_mode": selected_ai_mode,
     }
 
+def extract_multi_sample_reference(
+    input_path: Path,
+    work_dir: Path,
+    duration: float,
+    peak_time: float,
+    ffmpeg_bin: Path,
+    is_interlaced: bool = False,
+    sample_duration: float = 15.0,  # 3 x 15s = 45s Gesamt-Testsample
+) -> Optional[Path]:
+    """Extrahiert Samples bei 30%, 60% und Peak und fügt sie zu einem Test-Sample zusammen."""
+    ensure_dir(work_dir)
+    
+    # 1. Zeitstempel berechnen
+    t_30 = round(duration * 0.30, 2) if duration > 30 else 2.0
+    t_60 = round(duration * 0.60, 2) if duration > 30 else round(duration * 0.5, 2)
+    timestamps = [t_30, t_60, peak_time]
+    
+    temp_cuts: List[Path] = []
+    concat_list_path = work_dir / f"{input_path.stem}_concat_list.txt"
+    final_ref_sample = work_dir / f"{input_path.stem}_ref_multisample.mkv"
+
+    try:
+        # 2. Einzelschnipsel schneiden
+        for idx, ts in enumerate(timestamps):
+            part_path = work_dir / f"{input_path.stem}_part_{idx}.mkv"
+            temp_cuts.append(part_path)
+            
+            cut_cmd = [
+                str(ffmpeg_bin), "-hide_banner", "-loglevel", "error", "-y",
+                "-ss", str(ts), "-i", str(input_path),
+                "-t", str(sample_duration),
+                "-map", "0:v:0", "-an", "-sn",
+            ]
+            if is_interlaced:
+                cut_cmd.extend(["-vf", PROGRESSIVE_DEINTERLACE_FILTER, "-c:v", "ffv1"])
+            else:
+                cut_cmd.extend(["-c:v", "copy"])
+            
+            cut_cmd.extend(["-avoid_negative_ts", "make_zero", str(part_path)])
+            run_command(cut_cmd)
+
+        # 3. Concat-File für FFmpeg erstellen
+        with open(concat_list_path, "w", encoding="utf-8") as f:
+            for p in temp_cuts:
+                f.write(f"file '{p.resolve()}'\n")
+
+        # 4. Nahtlos zusammenfügen
+        concat_cmd = [
+            str(ffmpeg_bin), "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "concat", "-safe", "0", "-i", str(concat_list_path),
+            "-c", "copy", str(final_ref_sample)
+        ]
+        run_command(concat_cmd)
+        
+        return final_ref_sample
+
+    except Exception as exc:
+        logger.warning("Referenz-Sample konnte nicht erstellt werden: %s", exc)
+        return None
+
+    finally:
+        # Temporäre Schnipsel & Liste aufräumen
+        for p in temp_cuts:
+            if p.exists():
+                p.unlink()
+        if concat_list_path.exists():
+            concat_list_path.unlink()
 
 def calculate_vmaf_score(
     reference_sample: Path,
@@ -706,46 +776,34 @@ def calibrate_quality_vmaf(
 ) -> Tuple[int, float]:
     """Erstellt ein Test-Sample an der Peak-Szene, kalibriert VMAF und misst die Encoding-Dauer."""
     peak_time = float(noise_plan.get("peak_timestamp_sec", 0.0))
+    duration = get_video_duration(input_path, Path(FFPROBE_BIN))
     denoise_mode = noise_plan.get("denoise_mode", "off")
 
-    print(f"[>] VMAF-Kalibrierung: Analysiere Peak-Szene bei {peak_time:.2f}s (Denoise: {denoise_mode})")
+    print(f"[>] VMAF-Kalibrierung: Analysiere Peak-Szene bei {peak_time:.2f}s, bei 30% und 60% Laufzeit (Denoise: {denoise_mode})")
     logger.debug("VMAF-Kalibrierung gestartet für %s bei %.2fs mit Denoise '%s'", input_path.name, peak_time, denoise_mode)
     
     ensure_dir(work_dir)
 
     ffmpeg_bin = FFMPEG_BIN
-    ref_sample = work_dir / f"{input_path.stem}_ref_peak_20s.mkv"
+    ref_sample = work_dir / f"{input_path.stem}_ref_peak_45s.mkv"
 
-    cut_cmd = [
-        str(ffmpeg_bin),
-        "-hide_banner",
-        "-loglevel", "error",
-        "-y",
-        "-ss", str(peak_time),
-        "-i", str(input_path),
-        "-t", "20",
-        "-map", "0:v:0",
-        "-an", "-sn",
-    ]
-
-    if is_interlaced:
-        cut_cmd.extend([
-            "-vf", PROGRESSIVE_DEINTERLACE_FILTER,
-            "-c:v", "ffv1",
-        ])
-    else:
-        cut_cmd.extend(["-c:v", "copy"])
-
-    cut_cmd.extend([
-        "-avoid_negative_ts", "make_zero",
-        str(ref_sample),
-    ])
-        
-    logger.debug("FFmpeg Referenz-Extraktionsbefehl: %s", " ".join(cut_cmd))
-    print(f"    -> Erstelle 20s Referenz-Sample im Arbeitsverzeichnis...")
+    print(f"    -> Erstelle 45s Referenz-Sample im Arbeitsverzeichnis...")
 
     try:
-        run_command(cut_cmd)
+        ref_sample = extract_multi_sample_reference(
+            input_path=input_path,
+            work_dir=work_dir,
+            duration=duration,
+            peak_time=peak_time,
+            ffmpeg_bin=FFMPEG_BIN,
+            is_interlaced=is_interlaced,
+            sample_duration=15.0
+        )
+
+        if ref_sample is None or not ref_sample.exists():
+            logger.warning("Multi-Sample-Referenz fehlgeschlagen. Nutze Startwert Q=%d.", initial_q)
+            return initial_q, 0.0
+        
     except Exception as exc:
         logger.warning("Referenz-Sample konnte nicht erstellt werden: %s. Nutze Startwert %d.", exc, initial_q)
         return initial_q, 0.0
